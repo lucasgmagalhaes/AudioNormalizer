@@ -1,6 +1,7 @@
 mod engine;
 
 use engine::analyze::{self, AnalysisReport, Assessment, Measurement};
+use engine::av::AudioCache;
 use engine::job::{Cancelled, Job};
 use engine::normalize::{self, NormalizeReport};
 use engine::Targets;
@@ -8,6 +9,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 /// Only one analysis / normalization runs at a time.
@@ -24,6 +26,44 @@ impl JobSlot {
         if let Some(flag) = self.cancel.lock().unwrap().as_ref() {
             flag.store(true, Ordering::SeqCst);
         }
+    }
+}
+
+/// Compressed audio recorded by the last analysis, reused by the following
+/// normalization of the same, unchanged file.
+#[derive(Default)]
+struct CacheSlot(Mutex<Option<CachedAudio>>);
+
+struct CachedAudio {
+    key: FileKey,
+    cache: Arc<AudioCache>,
+}
+
+/// Identifies a file's content well enough to detect it changed on disk.
+#[derive(PartialEq, Eq)]
+struct FileKey {
+    path: PathBuf,
+    size: u64,
+    modified: Option<SystemTime>,
+}
+
+impl FileKey {
+    fn of(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Some(Self { path: path.to_path_buf(), size: meta.len(), modified: meta.modified().ok() })
+    }
+}
+
+impl CacheSlot {
+    fn store(&self, path: &Path, cache: Option<AudioCache>) {
+        let entry = cache.zip(FileKey::of(path)).map(|(cache, key)| CachedAudio { key, cache: Arc::new(cache) });
+        *self.0.lock().unwrap() = entry;
+    }
+
+    fn take_for(&self, path: &Path) -> Option<Arc<AudioCache>> {
+        let key = FileKey::of(path)?;
+        let entry = self.0.lock().unwrap().take()?;
+        (entry.key == key).then_some(entry.cache)
     }
 }
 
@@ -81,12 +121,16 @@ where
 async fn analyze_file(
     app: AppHandle,
     slot: State<'_, Arc<JobSlot>>,
+    cache: State<'_, CacheSlot>,
     path: String,
     targets: Targets,
 ) -> Result<AnalysisReport, CommandError> {
     targets.validate()?;
     let path = PathBuf::from(path);
-    run_job(app, slot.inner().clone(), move |job| analyze::run(targets, &path, job).map(|a| a.report)).await
+    let job_path = path.clone();
+    let analysis = run_job(app, slot.inner().clone(), move |job| analyze::run(targets, &job_path, job)).await?;
+    cache.store(&path, analysis.cache);
+    Ok(analysis.report)
 }
 
 /// Re-evaluate an existing measurement against new targets (no decoding).
@@ -100,14 +144,17 @@ fn assess(measurement: Measurement, targets: Targets) -> Result<Assessment, Comm
 async fn normalize_file(
     app: AppHandle,
     slot: State<'_, Arc<JobSlot>>,
+    cache: State<'_, CacheSlot>,
     path: String,
     targets: Targets,
     measured: Option<Measurement>,
 ) -> Result<NormalizeReport, CommandError> {
     targets.validate()?;
     let path = PathBuf::from(path);
+    // Taken, not borrowed: the file is replaced, so the cache is stale after.
+    let audio = measured.and(cache.take_for(&path));
     run_job(app, slot.inner().clone(), move |job| {
-        normalize::run(targets, &path, measured, None, job)
+        normalize::run(targets, &path, measured, audio, job)
     })
     .await
 }
@@ -148,6 +195,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(Arc::new(JobSlot::default()))
+        .manage(CacheSlot::default())
         .on_window_event(|window, event| {
             // Closing mid-job would leave a half-written temp file behind:
             // cancel, let the job clean up, then exit (see run_job).
