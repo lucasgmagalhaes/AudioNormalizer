@@ -1,0 +1,34 @@
+[package]
+name = "audio-normalizer"
+version = "0.1.0"
+description = "Normalizador de loudness para vídeos"
+authors = ["Lucas Gomes"]
+edition = "2021"
+
+[lib]
+name = "audio_normalizer_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+cc = "1"
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+ebur128 = "0.1"
+
+# The DSP loop is far too slow unoptimized; keep dev builds usable.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
