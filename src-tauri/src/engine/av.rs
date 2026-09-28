@@ -43,6 +43,8 @@ extern "C" {
     ) -> *mut AvbRemuxer;
     fn avb_remuxer_encoder(mux: *const AvbRemuxer) -> *const c_char;
     fn avb_remuxer_write(mux: *mut AvbRemuxer, samples: *const f32, frames: c_int, err: *mut c_char) -> c_int;
+    fn avb_remuxer_monitor_format(mux: *const AvbRemuxer, sample_rate: *mut c_int, channels: *mut c_int) -> c_int;
+    fn avb_remuxer_read_monitor(mux: *mut AvbRemuxer, out: *mut f32, max_frames: c_int) -> c_int;
     fn avb_remuxer_finish(mux: *mut AvbRemuxer, err: *mut c_char) -> c_int;
     fn avb_remuxer_close(mux: *mut AvbRemuxer);
 }
@@ -165,6 +167,10 @@ impl PcmDecoder {
     }
 }
 
+// SAFETY: the libav contexts behind the handle are only ever used by one
+// thread at a time (the handle is moved, never shared).
+unsafe impl Send for PcmDecoder {}
+
 impl Drop for PcmDecoder {
     fn drop(&mut self) {
         // SAFETY: pointer came from avb_decoder_open and is closed once.
@@ -177,7 +183,18 @@ impl Drop for PcmDecoder {
 pub struct Remuxer {
     ptr: NonNull<AvbRemuxer>,
     channels: usize,
+    monitor_channels: usize,
 }
+
+/// Sample rate and channel count of the monitor PCM.
+#[derive(Debug, Clone, Copy)]
+pub struct MonitorFormat {
+    pub sample_rate: u32,
+    pub channels: u32,
+}
+
+// SAFETY: see PcmDecoder.
+unsafe impl Send for Remuxer {}
 
 impl Remuxer {
     /// `encoder_options`: private encoder options as "key=value:key=value".
@@ -190,7 +207,32 @@ impl Remuxer {
         // SAFETY: valid NUL-terminated strings and error buffer; null is handled below.
         let raw = unsafe { avb_remuxer_open(input.as_ptr(), output.as_ptr(), options.as_ptr(), err.ptr()) };
         let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
-        Ok(Self { ptr, channels: info.audio.channels as usize })
+        let mut remuxer = Self { ptr, channels: info.audio.channels as usize, monitor_channels: 0 };
+        remuxer.monitor_channels = remuxer.monitor_format().map_or(0, |f| f.channels as usize);
+        Ok(remuxer)
+    }
+
+    /// Format of the encoded audio decoded back, when a decoder exists.
+    pub fn monitor_format(&self) -> Option<MonitorFormat> {
+        let (mut rate, mut channels) = (0, 0);
+        // SAFETY: live handle, valid out-pointers.
+        let ok = unsafe { avb_remuxer_monitor_format(self.ptr.as_ptr(), &mut rate, &mut channels) } == 0;
+        (ok && rate > 0 && channels > 0).then_some(MonitorFormat { sample_rate: rate as u32, channels: channels as u32 })
+    }
+
+    /// Replace `out` with the next block of decoded-back audio produced so
+    /// far; returns `false` when nothing is pending.
+    pub fn read_monitor(&mut self, out: &mut Vec<f32>) -> bool {
+        const BLOCK_FRAMES: usize = 8192;
+        if self.monitor_channels == 0 {
+            out.clear();
+            return false;
+        }
+        out.resize(BLOCK_FRAMES * self.monitor_channels, 0.0);
+        // SAFETY: `out` holds BLOCK_FRAMES frames of the monitor channel count.
+        let n = unsafe { avb_remuxer_read_monitor(self.ptr.as_ptr(), out.as_mut_ptr(), BLOCK_FRAMES as c_int) };
+        out.truncate(n.max(0) as usize * self.monitor_channels);
+        n > 0
     }
 
     /// Name of the audio encoder the bridge picked (e.g. "aac").
@@ -220,7 +262,9 @@ impl Remuxer {
         Ok(())
     }
 
-    pub fn finish(self) -> Result<()> {
+    /// Flush and write the trailer. Monitor audio produced by the flush can
+    /// still be read afterwards; the file is closed when the handle drops.
+    pub fn finish(&mut self) -> Result<()> {
         let mut err = ErrBuf::new();
         // SAFETY: pointer is live until Drop runs after this call.
         if unsafe { avb_remuxer_finish(self.ptr.as_ptr(), err.ptr()) } < 0 {

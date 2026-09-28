@@ -49,6 +49,12 @@ const char *avb_remuxer_encoder(const AvbRemuxer *mux);
 /* `samples` must match the decoder's format: interleaved float, same rate
  * and channel count as reported by avb_probe. */
 int avb_remuxer_write(AvbRemuxer *mux, const float *samples, int frames, char *err);
+/* Format of the monitor PCM (the encoded audio decoded back), interleaved
+ * float. Returns -1 when no monitor decoder is available. */
+int avb_remuxer_monitor_format(const AvbRemuxer *mux, int *sample_rate, int *channels);
+/* Drains up to `max_frames` monitor frames produced by previous writes (or
+ * by finish). Encoder priming is already removed. Returns frames read. */
+int avb_remuxer_read_monitor(AvbRemuxer *mux, float *out, int max_frames);
 /* Flushes the encoder, copies the remaining packets, writes the trailer. */
 int avb_remuxer_finish(AvbRemuxer *mux, char *err);
 void avb_remuxer_close(AvbRemuxer *mux);

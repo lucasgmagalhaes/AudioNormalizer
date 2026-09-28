@@ -361,12 +361,25 @@ struct AvbRemuxer {
     int64_t next_pts;      /* encoder time base */
     AVChannelLayout src_layout;
     int src_rate;
+    /* Monitor: decodes our own encoded packets so the result can be
+     * measured without reading the output file back. */
+    AVCodecContext *mon;
+    AVFrame *mon_frame;
+    Converter mon_conv;
+    AVAudioFifo *mon_fifo;  /* interleaved float */
+    int64_t mon_start;      /* first real sample, encoder time base */
+    int64_t mon_skip;       /* priming samples still to drop */
+    int mon_started;
 };
 
 void avb_remuxer_close(AvbRemuxer *m)
 {
     if (!m)
         return;
+    converter_free(&m->mon_conv);
+    av_audio_fifo_free(m->mon_fifo);
+    av_frame_free(&m->mon_frame);
+    avcodec_free_context(&m->mon);
     converter_free(&m->conv);
     av_audio_fifo_free(m->fifo);
     av_frame_free(&m->frame);
@@ -574,6 +587,8 @@ static int copy_chapters(AvbRemuxer *m, char *err)
     return 0;
 }
 
+static void open_monitor(AvbRemuxer *m);
+
 AvbRemuxer *avb_remuxer_open(const char *input, const char *output,
                              const char *encoder_options, char *err)
 {
@@ -696,6 +711,8 @@ AvbRemuxer *avb_remuxer_open(const char *input, const char *output,
     m->next_pts = start == AV_NOPTS_VALUE
                       ? 0
                       : av_rescale_q(start, audio_st->time_base, m->enc->time_base);
+
+    open_monitor(m);
     return m;
 
 error:
@@ -743,6 +760,92 @@ static int pump_copy(AvbRemuxer *m, double until, int all, char *err)
     }
 }
 
+/* Best effort: without a matching decoder the caller measures the file. */
+static void open_monitor(AvbRemuxer *m)
+{
+    const AVCodec *codec = avcodec_find_decoder(m->enc->codec_id);
+    AVCodecParameters *par = avcodec_parameters_alloc();
+    int ok = codec && par && avcodec_parameters_from_context(par, m->enc) >= 0;
+    if (ok)
+        ok = (m->mon = avcodec_alloc_context3(codec)) != NULL &&
+             avcodec_parameters_to_context(m->mon, par) >= 0;
+    avcodec_parameters_free(&par);
+    if (ok) {
+        m->mon->pkt_timebase = m->enc->time_base;
+        ok = avcodec_open2(m->mon, codec, NULL) >= 0;
+    }
+    if (ok) {
+        m->mon_conv.out_fmt = AV_SAMPLE_FMT_FLT;
+        m->mon_conv.out_rate = m->enc->sample_rate;
+        ok = av_channel_layout_copy(&m->mon_conv.out_layout, &m->enc->ch_layout) >= 0 &&
+             (m->mon_frame = av_frame_alloc()) != NULL &&
+             (m->mon_fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, m->enc->ch_layout.nb_channels,
+                                                8192)) != NULL;
+    }
+    if (!ok) {
+        avcodec_free_context(&m->mon);
+        return;
+    }
+    m->mon_start = m->next_pts;
+}
+
+/* Decodes one encoded packet (NULL flushes) into the monitor FIFO. */
+static int monitor_packet(AvbRemuxer *m, const AVPacket *pkt, char *err)
+{
+    int ret = avcodec_send_packet(m->mon, pkt);
+    if (ret < 0 && ret != AVERROR_EOF)
+        return fail(err, "falha ao conferir o áudio codificado", ret);
+    for (;;) {
+        ret = avcodec_receive_frame(m->mon, m->mon_frame);
+        if (ret == AVERROR(EAGAIN))
+            return 0;
+        if (ret == AVERROR_EOF)
+            return converter_push(&m->mon_conv, NULL, 0, m->mon_fifo, err);
+        if (ret < 0)
+            return fail(err, "falha ao conferir o áudio codificado", ret);
+        if (!m->mon_started) {
+            /* Everything before the first real sample is encoder priming,
+             * which players trim; drop it too. */
+            int64_t pts = m->mon_frame->pts;
+            m->mon_skip = pts != AV_NOPTS_VALUE ? FFMAX(0, m->mon_start - pts) : m->enc->initial_padding;
+            m->mon_started = 1;
+        }
+        ret = converter_configure(&m->mon_conv, &m->mon_frame->ch_layout, m->mon_frame->format,
+                                  m->mon_frame->sample_rate, err);
+        if (ret >= 0)
+            ret = converter_push(&m->mon_conv, (const uint8_t **)m->mon_frame->extended_data,
+                                 m->mon_frame->nb_samples, m->mon_fifo, err);
+        av_frame_unref(m->mon_frame);
+        if (ret < 0)
+            return ret;
+    }
+}
+
+int avb_remuxer_monitor_format(const AvbRemuxer *m, int *sample_rate, int *channels)
+{
+    if (!m->mon)
+        return -1;
+    *sample_rate = m->enc->sample_rate;
+    *channels = m->enc->ch_layout.nb_channels;
+    return 0;
+}
+
+int avb_remuxer_read_monitor(AvbRemuxer *m, float *out, int max_frames)
+{
+    if (!m->mon)
+        return 0;
+    while (m->mon_skip > 0 && av_audio_fifo_size(m->mon_fifo) > 0) {
+        int n = (int)FFMIN(m->mon_skip, av_audio_fifo_size(m->mon_fifo));
+        av_audio_fifo_drain(m->mon_fifo, n);
+        m->mon_skip -= n;
+    }
+    int n = FFMIN(av_audio_fifo_size(m->mon_fifo), max_frames);
+    if (n <= 0)
+        return 0;
+    void *planes[1] = {out};
+    return av_audio_fifo_read(m->mon_fifo, planes, n);
+}
+
 static int drain_encoder(AvbRemuxer *m, char *err)
 {
     for (;;) {
@@ -752,6 +855,10 @@ static int drain_encoder(AvbRemuxer *m, char *err)
         if (ret < 0)
             return fail(err, "falha ao codificar o áudio", ret);
 
+        if (m->mon && (ret = monitor_packet(m, m->enc_pkt, err)) < 0) {
+            av_packet_unref(m->enc_pkt);
+            return ret;
+        }
         av_packet_rescale_ts(m->enc_pkt, m->enc->time_base, m->enc_stream->time_base);
         m->enc_pkt->stream_index = m->enc_stream->index;
         double audio_time = m->enc_pkt->pts != AV_NOPTS_VALUE
@@ -835,6 +942,8 @@ int avb_remuxer_finish(AvbRemuxer *m, char *err)
     if (ret < 0)
         return fail(err, "falha ao finalizar o codificador", ret);
     ret = drain_encoder(m, err);
+    if (ret >= 0 && m->mon)
+        ret = monitor_packet(m, NULL, err);
     if (ret >= 0)
         ret = pump_copy(m, 0.0, 1, err);
     if (ret < 0)
