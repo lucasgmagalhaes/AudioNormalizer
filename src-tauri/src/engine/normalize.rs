@@ -190,7 +190,8 @@ fn render(
     let sample_rate = info.audio.sample_rate;
     let gain = db_to_linear(gain_db) as f32;
     let mut limiter = Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32);
-    let mut meter = EbuR128::new(channels, sample_rate, Mode::I | Mode::TRUE_PEAK)
+    // Only integrated loudness: peaks are measured on the encoded file.
+    let mut meter = EbuR128::new(channels, sample_rate, Mode::I)
         .context("falha ao iniciar o medidor de loudness")?;
     let mut decoder = PcmDecoder::open(input, info)?;
 
@@ -220,9 +221,8 @@ fn render(
         }
     }
 
-    let result = analyze::read_measurement(&meter, channels)?;
     Ok(Rendered {
-        output_lufs: result.integrated_lufs,
+        output_lufs: meter.loudness_global().context("falha ao calcular loudness")?,
         limiter_reduction_db: -linear_to_db(limiter.min_gain),
     })
 }
