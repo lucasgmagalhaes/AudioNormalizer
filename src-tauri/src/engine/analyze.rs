@@ -5,9 +5,12 @@ use anyhow::{bail, Context, Result};
 use ebur128::{EbuR128, Mode};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::mpsc::sync_channel;
+use std::sync::Arc;
+use std::thread;
 
 use super::av::{self, MediaInfo, PcmDecoder};
-use super::job::{Job, Progress};
+use super::job::{Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::{linear_to_db, Targets};
 
 /// Largest gain change we are willing to apply in either direction.
@@ -92,33 +95,91 @@ pub fn run(targets: Targets, input: &Path, job: &Job) -> Result<AnalysisReport> 
     })
 }
 
-/// Decode the first audio track and run it through an EBU R128 meter.
+/// Decode the first audio track and measure it. The decoder feeds, on
+/// separate threads, one meter for loudness/LRA/sample peak and one
+/// true-peak meter per channel (true peak is the expensive part).
 pub fn measure(input: &Path, info: &MediaInfo, job: &Job, progress: &mut Progress) -> Result<Measurement> {
     let channels = info.audio.channels;
-    let mut meter = EbuR128::new(
-        channels,
-        info.audio.sample_rate,
-        Mode::I | Mode::LRA | Mode::TRUE_PEAK | Mode::SAMPLE_PEAK,
-    )
-    .context("falha ao iniciar o medidor de loudness")?;
-
+    let rate = info.audio.sample_rate;
+    let stride = channels as usize;
     let mut decoder = PcmDecoder::open(input, info)?;
-    let total_frames = info.duration * info.audio.sample_rate as f64;
-    let mut frames = 0u64;
-    let mut block = Vec::new();
-    while decoder.read(&mut block)? {
-        job.check_cancelled()?;
-        meter.add_frames_f32(&block).context("falha ao medir loudness")?;
-        frames += (block.len() / channels as usize) as u64;
-        if total_frames > 0.0 {
-            progress.update(frames as f64 / total_frames);
-        }
-    }
+    let total_frames = info.duration * rate as f64;
 
-    if frames == 0 {
-        bail!("a faixa de áudio está vazia");
-    }
-    read_measurement(&meter, channels)
+    thread::scope(|s| {
+        let mut senders = Vec::with_capacity(stride + 1);
+
+        let (tx, rx) = sync_channel::<Arc<Vec<f32>>>(QUEUE_BLOCKS);
+        senders.push(tx);
+        let loudness = s.spawn(move || -> Result<(f64, f64, f64)> {
+            let mut meter = EbuR128::new(channels, rate, Mode::I | Mode::LRA | Mode::SAMPLE_PEAK)
+                .context("falha ao iniciar o medidor de loudness")?;
+            for block in rx {
+                meter.add_frames_f32(&block).context("falha ao medir loudness")?;
+            }
+            let integrated = meter.loudness_global().context("falha ao calcular loudness")?;
+            let sample_peak = (0..channels).map(|ch| meter.sample_peak(ch).unwrap_or(0.0)).fold(0.0, f64::max);
+            Ok((integrated, meter.loudness_range().unwrap_or(0.0), sample_peak))
+        });
+
+        let mut peak_meters = Vec::with_capacity(stride);
+        for ch in 0..stride {
+            let (tx, rx) = sync_channel::<Arc<Vec<f32>>>(QUEUE_BLOCKS);
+            senders.push(tx);
+            peak_meters.push(s.spawn(move || -> Result<f64> {
+                let mut meter = EbuR128::new(1, rate, Mode::TRUE_PEAK)
+                    .context("falha ao iniciar o medidor de pico")?;
+                let mut mono = Vec::new();
+                for block in rx {
+                    mono.clear();
+                    mono.extend(block.iter().skip(ch).step_by(stride));
+                    meter.add_frames_f32(&mono).context("falha ao medir pico")?;
+                }
+                Ok(meter.true_peak(0).unwrap_or(0.0))
+            }));
+        }
+
+        let fed = (|| -> Result<u64> {
+            let mut frames = 0u64;
+            let mut block = Vec::new();
+            while decoder.read(&mut block)? {
+                job.check_cancelled()?;
+                frames += (block.len() / stride) as u64;
+                let shared = Arc::new(std::mem::take(&mut block));
+                for tx in &senders {
+                    tx.send(shared.clone()).map_err(|_| anyhow::Error::new(StageStopped))?;
+                }
+                if total_frames > 0.0 {
+                    progress.update(frames as f64 / total_frames);
+                }
+            }
+            Ok(frames)
+        })();
+        drop(senders);
+        let loudness = loudness.join().expect("meter thread panicked");
+        let peaks: Vec<Result<f64>> = peak_meters
+            .into_iter()
+            .map(|m| m.join().expect("meter thread panicked"))
+            .collect();
+
+        let frames = match fed {
+            Err(e) if !e.is::<StageStopped>() => return Err(e),
+            fed => fed,
+        };
+        let (integrated, loudness_range, sample_peak) = loudness?;
+        let true_peak = peaks.into_iter().collect::<Result<Vec<f64>>>()?.into_iter().fold(0.0, f64::max);
+        if frames? == 0 {
+            bail!("a faixa de áudio está vazia");
+        }
+        if !integrated.is_finite() || integrated < SILENCE_LUFS {
+            bail!("o áudio é silencioso demais para ser normalizado");
+        }
+        Ok(Measurement {
+            integrated_lufs: integrated,
+            loudness_range,
+            true_peak_db: linear_to_db(true_peak),
+            sample_peak_db: linear_to_db(sample_peak),
+        })
+    })
 }
 
 pub(crate) fn read_measurement(meter: &EbuR128, channels: u32) -> Result<Measurement> {
