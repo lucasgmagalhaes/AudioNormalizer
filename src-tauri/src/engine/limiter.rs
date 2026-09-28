@@ -10,6 +10,10 @@
 //! filter of the same length. Because the box filter averages values that are
 //! all at or below the gain required at the peak, the peak is guaranteed to
 //! land under the ceiling while the gain ramps smoothly over the look-ahead.
+//!
+//! Work is done per block: detection runs over contiguous per-channel
+//! history (so the interpolation filter vectorizes), and the gain and delay
+//! lines are fixed-size rings.
 
 use std::collections::VecDeque;
 
@@ -20,6 +24,8 @@ const RELEASE_SECONDS: f64 = 0.080;
 const TP_TAPS: usize = 12;
 /// Frames between a sample entering and its true peak being known.
 const TP_DELAY: usize = TP_TAPS / 2;
+/// History index, inside a TP_TAPS window, of the frame being detected.
+const TP_CENTER: usize = TP_TAPS - 1 - TP_DELAY;
 /// Oversampling factor; phases 1..OVERSAMPLE are interpolated.
 const OVERSAMPLE: usize = 4;
 
@@ -30,17 +36,26 @@ pub struct Limiter {
     release_coef: f64,
     /// Interpolation coefficients for the in-between phases.
     tp_coeffs: [[f32; TP_TAPS]; OVERSAMPLE - 1],
-    /// Last TP_TAPS interleaved input frames.
-    history: VecDeque<f32>,
-    frames_in: u64,
+    /// Per channel: the last TP_TAPS - 1 samples, then the current block.
+    history: Vec<Vec<f32>>,
+    /// Per-frame peak of the current block.
+    peaks: Vec<f32>,
+    /// Scratch for one interpolation phase over the block.
+    interpolated: Vec<f32>,
+    /// Detected frames still to drop: the zero history they came from.
+    prefill: usize,
     frame_index: u64,
     /// (frame index, required gain), gains strictly increasing front to back.
     minimum: VecDeque<(u64, f64)>,
     release_state: f64,
-    window: VecDeque<f64>,
+    /// Box filter ring over the look-ahead.
+    window: Vec<f64>,
+    window_pos: usize,
     window_sum: f64,
-    /// Delayed interleaved samples waiting for their gain.
-    delay: VecDeque<f32>,
+    /// Delay line ring of `lookahead` interleaved frames.
+    delay: Vec<f32>,
+    delay_head: usize,
+    delay_len: usize,
     /// Lowest gain applied so far (linear).
     pub min_gain: f64,
 }
@@ -55,14 +70,19 @@ impl Limiter {
             lookahead,
             release_coef: (-1.0 / (RELEASE_SECONDS * sample_rate as f64)).exp(),
             tp_coeffs: interpolation_coeffs(),
-            history: std::iter::repeat_n(0.0, TP_TAPS * channels).collect(),
-            frames_in: 0,
+            history: vec![vec![0.0; TP_TAPS - 1]; channels],
+            peaks: Vec::new(),
+            interpolated: Vec::new(),
+            prefill: TP_DELAY,
             frame_index: 0,
             minimum: VecDeque::with_capacity(lookahead + 1),
             release_state: 1.0,
-            window: std::iter::repeat_n(1.0, lookahead).collect(),
+            window: vec![1.0; lookahead],
+            window_pos: 0,
             window_sum: lookahead as f64,
-            delay: VecDeque::with_capacity((lookahead + 1) * channels),
+            delay: vec![0.0; lookahead * channels],
+            delay_head: 0,
+            delay_len: 0,
             min_gain: 1.0,
         }
     }
@@ -71,59 +91,68 @@ impl Limiter {
     /// frames leave the delay line (the first calls return fewer frames).
     pub fn process(&mut self, input: &[f32], output: &mut Vec<f32>) {
         output.clear();
-        output.reserve(input.len());
-        for frame in input.chunks_exact(self.channels) {
-            self.push_frame(frame, output);
+        let frames = input.len() / self.channels;
+        if frames == 0 {
+            return;
+        }
+        output.reserve(frames * self.channels);
+
+        for (ch, history) in self.history.iter_mut().enumerate() {
+            history.truncate(TP_TAPS - 1);
+            history.extend(input.iter().skip(ch).step_by(self.channels).take(frames));
+        }
+        self.detect_peaks(frames);
+
+        for frame in 0..frames {
+            if self.prefill > 0 {
+                self.prefill -= 1;
+                continue;
+            }
+            let peak = self.peaks[frame];
+            self.push_frame(frame, peak, output);
+        }
+
+        for history in &mut self.history {
+            history.drain(..frames);
         }
     }
 
     /// Drain the delay line so the output length matches the input length.
     pub fn flush(&mut self, output: &mut Vec<f32>) {
-        output.clear();
-        let silence = vec![0.0; self.channels];
-        for _ in 0..TP_DELAY + self.lookahead - 1 {
-            self.push_frame(&silence, output);
-        }
+        let silence = vec![0.0; (TP_DELAY + self.lookahead - 1) * self.channels];
+        self.process(&silence, output);
     }
 
-    fn push_frame(&mut self, frame: &[f32], output: &mut Vec<f32>) {
-        for _ in 0..self.channels {
-            self.history.pop_front();
-        }
-        self.history.extend(frame.iter().copied());
-        self.frames_in += 1;
-        // The oldest TP_DELAY frames of history are the zero pre-fill.
-        if self.frames_in <= TP_DELAY as u64 {
-            return;
-        }
-        let peak = self.true_peak_of_detected_frame();
-        let base = (TP_TAPS - 1 - TP_DELAY) * self.channels;
-        for ch in 0..self.channels {
-            self.delay.push_back(self.history[base + ch]);
-        }
-        self.apply_gain(peak, output);
-    }
-
-    /// Peak of frame `TP_DELAY` frames ago, including the interpolated
-    /// values between it and the following frame.
-    fn true_peak_of_detected_frame(&self) -> f32 {
-        let ch_count = self.channels;
-        let center = TP_TAPS - 1 - TP_DELAY;
-        let mut peak = 0.0f32;
-        for ch in 0..ch_count {
-            peak = peak.max(self.history[center * ch_count + ch].abs());
+    /// Fills `peaks[j]` with the true peak (across channels) of the frame
+    /// detected when block frame `j` arrives, i.e. history index `j + TP_CENTER`.
+    /// The filter is applied tap by tap across the whole block so each inner
+    /// loop is a plain multiply-add over contiguous slices (vectorized).
+    fn detect_peaks(&mut self, frames: usize) {
+        self.peaks.clear();
+        self.peaks.resize(frames, 0.0);
+        for history in &self.history {
+            let samples = &history[TP_CENTER..TP_CENTER + frames];
+            for (peak, x) in self.peaks.iter_mut().zip(samples) {
+                *peak = peak.max(x.abs());
+            }
             for phase in &self.tp_coeffs {
-                let mut acc = 0.0f32;
-                for (tap, c) in phase.iter().enumerate() {
-                    acc += self.history[tap * ch_count + ch] * c;
+                self.interpolated.clear();
+                self.interpolated.resize(frames, 0.0);
+                for (tap, &c) in phase.iter().enumerate() {
+                    for (acc, x) in self.interpolated.iter_mut().zip(&history[tap..tap + frames]) {
+                        *acc += x * c;
+                    }
                 }
-                peak = peak.max(acc.abs());
+                for (peak, acc) in self.peaks.iter_mut().zip(&self.interpolated) {
+                    *peak = peak.max(acc.abs());
+                }
             }
         }
-        peak
     }
 
-    fn apply_gain(&mut self, peak: f32, output: &mut Vec<f32>) {
+    /// Runs the gain computer for the frame at history index
+    /// `frame + TP_CENTER` and emits the frame leaving the delay line.
+    fn push_frame(&mut self, frame: usize, peak: f32, output: &mut Vec<f32>) {
         let required = if peak > self.ceiling {
             (self.ceiling / peak) as f64
         } else {
@@ -154,31 +183,50 @@ impl Limiter {
         };
 
         // Box filter over the look-ahead window.
-        self.window_sum += self.release_state;
-        self.window.push_back(self.release_state);
-        if let Some(old) = self.window.pop_front() {
-            self.window_sum -= old;
+        self.window_sum += self.release_state - self.window[self.window_pos];
+        self.window[self.window_pos] = self.release_state;
+        self.window_pos += 1;
+        if self.window_pos == self.lookahead {
+            self.window_pos = 0;
         }
         let gain = (self.window_sum / self.lookahead as f64).min(1.0);
 
-        // The gain lines up with the frame that entered lookahead-1 frames ago.
-        if self.delay.len() >= self.lookahead * self.channels {
+        // Delay line: the gain lines up with the frame that entered
+        // lookahead - 1 frames ago.
+        let channels = self.channels;
+        let mut slot = self.delay_head + self.delay_len;
+        if slot >= self.lookahead {
+            slot -= self.lookahead;
+        }
+        let slot = slot * channels;
+        for (ch, history) in self.history.iter().enumerate() {
+            self.delay[slot + ch] = history[frame + TP_CENTER];
+        }
+        self.delay_len += 1;
+        if self.delay_len == self.lookahead {
             self.min_gain = self.min_gain.min(gain);
             let gain = gain as f32;
             let ceiling = self.ceiling;
-            for _ in 0..self.channels {
-                let sample = self.delay.pop_front().unwrap_or(0.0) * gain;
-                // Guard against floating-point rounding in the running sum.
-                output.push(sample.clamp(-ceiling, ceiling));
+            let oldest = self.delay_head * channels;
+            // Clamp guards against floating-point rounding in the running sum.
+            output.extend(
+                self.delay[oldest..oldest + channels]
+                    .iter()
+                    .map(|s| (s * gain).clamp(-ceiling, ceiling)),
+            );
+            self.delay_head += 1;
+            if self.delay_head == self.lookahead {
+                self.delay_head = 0;
             }
+            self.delay_len -= 1;
         }
     }
 }
 
 /// Hann-windowed sinc taps for the fractional positions 1/4, 2/4 and 3/4
-/// between history frame `TP_TAPS - 1 - TP_DELAY` and the next one.
+/// between history frame `TP_CENTER` and the next one.
 fn interpolation_coeffs() -> [[f32; TP_TAPS]; OVERSAMPLE - 1] {
-    let center = (TP_TAPS - 1 - TP_DELAY) as f64;
+    let center = TP_CENTER as f64;
     let half_span = TP_DELAY as f64;
     let mut coeffs = [[0.0f32; TP_TAPS]; OVERSAMPLE - 1];
     for (p, phase) in coeffs.iter_mut().enumerate() {
@@ -251,6 +299,20 @@ mod tests {
         for (a, b) in input.iter().zip(&output) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    #[test]
+    fn block_size_does_not_change_the_result() {
+        let input: Vec<f32> = (0..30_000).map(|i| ((i as f32) * 0.07).sin() * (1.0 + (i % 5000) as f32 / 2000.0)).collect();
+        let mut whole = Limiter::new(2, 48_000, 0.7);
+        let mut expected = Vec::new();
+        whole.process(&input, &mut expected);
+        let mut tail = Vec::new();
+        whole.flush(&mut tail);
+        expected.extend(tail);
+
+        let mut chunked = Limiter::new(2, 48_000, 0.7);
+        assert_eq!(run(&mut chunked, &input), expected);
     }
 
     #[test]
