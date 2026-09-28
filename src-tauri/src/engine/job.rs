@@ -26,6 +26,21 @@ impl std::fmt::Display for Cancelled {
 
 impl std::error::Error for Cancelled {}
 
+/// Blocks in flight between pipeline stages (8192 frames each).
+pub(crate) const QUEUE_BLOCKS: usize = 8;
+
+/// Marker error: a downstream pipeline stage stopped; its own error wins.
+#[derive(Debug)]
+pub(crate) struct StageStopped;
+
+impl std::fmt::Display for StageStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("etapa de processamento interrompida")
+    }
+}
+
+impl std::error::Error for StageStopped {}
+
 type Sink = Box<dyn Fn(ProgressEvent) + Send + Sync>;
 
 pub struct Job {

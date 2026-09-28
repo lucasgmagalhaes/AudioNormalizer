@@ -13,7 +13,7 @@ use std::time::Instant;
 
 use super::analyze::{self, Measurement, MAX_GAIN_DB};
 use super::av::{self, MediaInfo, PcmDecoder, Remuxer};
-use super::job::{Cancelled, Job, Progress};
+use super::job::{Cancelled, Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::limiter::Limiter;
 use super::{db_to_linear, linear_to_db, Targets};
 
@@ -123,25 +123,10 @@ struct Encoded {
     limiter_reduction_db: f64,
 }
 
-/// Blocks in flight between pipeline stages (8192 frames each).
-const QUEUE_BLOCKS: usize = 8;
-
 enum ToEncoder {
     Block(Vec<f32>),
     Finish,
 }
-
-/// Marker error: a downstream pipeline stage stopped; its own error wins.
-#[derive(Debug)]
-struct StageStopped;
-
-impl std::fmt::Display for StageStopped {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("etapa de codificação interrompida")
-    }
-}
-
-impl std::error::Error for StageStopped {}
 
 /// Render into `output` and measure what was encoded. Runs as a pipeline:
 /// decode -> [gain, limiter, meter] -> encode + mux -> meter of the encoded
