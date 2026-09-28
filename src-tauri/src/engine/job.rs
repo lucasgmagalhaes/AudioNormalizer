@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProgressEvent {
-    /// `analyze`, `calibrate`, `normalize`, `verify` or `finalize`.
+    /// `analyze`, `calibrate`, `normalize`, `retry`, `verify` or `finalize`.
     pub stage: &'static str,
     /// Overall job progress, 0..=100.
     pub percent: f64,

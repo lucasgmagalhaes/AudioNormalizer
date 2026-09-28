@@ -6,11 +6,13 @@ use ebur128::{EbuR128, Mode};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::sync_channel;
+use std::thread;
 use std::time::Instant;
 
 use super::analyze::{self, Measurement, MAX_GAIN_DB};
 use super::av::{self, MediaInfo, PcmDecoder, Remuxer};
-use super::job::{Job, Progress};
+use super::job::{Cancelled, Job, Progress};
 use super::limiter::Limiter;
 use super::{db_to_linear, linear_to_db, Targets};
 
@@ -71,7 +73,7 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
         for _ in 0..MAX_CALIBRATION_PASSES {
             let mut progress = job.stage("calibrate", cursor, span);
             cursor += span;
-            let pass = render(input, &info, gain_db, ceiling_db, job, &mut progress, None)?;
+            let pass = simulate(input, &info, gain_db, ceiling_db, job, &mut progress)?;
             let miss = targets.target_lufs - pass.output_lufs;
             if miss.abs() < CALIBRATION_TOLERANCE_LU {
                 break;
@@ -84,7 +86,7 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
 
     let settings = EncodeSettings { gain_db, ceiling_db, encoder_options: "" };
     let temp = TempFile(temp_path(input, "normalizing")?);
-    let mut encoded = encode(input, &temp.0, &info, &settings, job, (cursor, 80.0, 88.0))?;
+    let mut encoded = encode(input, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
     // Lossy encoders can overshoot the ceiling. The native AAC encoder's
     // default coder occasionally does so badly (hard transients right at
@@ -92,7 +94,7 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
     if encoded.true_peak_db > targets.true_peak_db + PEAK_TOLERANCE_DB && encoded.encoder == "aac" {
         let retry = TempFile(temp_path(input, "normalizing-retry")?);
         let settings = EncodeSettings { encoder_options: "aac_coder=fast", ..settings };
-        let second = encode(input, &retry.0, &info, &settings, job, (88.0, 95.0, 98.0))?;
+        let second = encode(input, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
         if second.true_peak_db < encoded.true_peak_db {
             fs::rename(&retry.0, &temp.0).context("falha ao preparar o arquivo final")?;
             std::mem::forget(retry);
@@ -125,7 +127,7 @@ struct EncodeSettings<'a> {
     encoder_options: &'a str,
 }
 
-/// What ended up in the written file, measured by decoding it back.
+/// What ended up in the written file.
 struct Encoded {
     encoder: String,
     output_lufs: f64,
@@ -133,34 +135,140 @@ struct Encoded {
     limiter_reduction_db: f64,
 }
 
-/// Render into `output`, sanity-check it and measure it. `progress` holds
-/// (start, end of encoding, end of verification) on the overall bar.
+/// Blocks in flight between pipeline stages (8192 frames each).
+const QUEUE_BLOCKS: usize = 8;
+
+enum ToEncoder {
+    Block(Vec<f32>),
+    Finish,
+}
+
+/// Marker error: a downstream pipeline stage stopped; its own error wins.
+#[derive(Debug)]
+struct StageStopped;
+
+impl std::fmt::Display for StageStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("etapa de codificação interrompida")
+    }
+}
+
+impl std::error::Error for StageStopped {}
+
+/// Render into `output` and measure what was encoded. Runs as a pipeline:
+/// decode -> [gain, limiter, meter] -> encode + mux -> meter of the encoded
+/// audio decoded back, each stage on its own thread.
 fn encode(
     input: &Path,
     output: &Path,
     info: &MediaInfo,
     settings: &EncodeSettings,
     job: &Job,
-    (start, encoded_at, verified_at): (f64, f64, f64),
+    (stage, start, end): (&'static str, f64, f64),
 ) -> Result<Encoded> {
-    let mut remuxer = Remuxer::open(input, output, info, settings.encoder_options)?;
+    let remuxer = Remuxer::open(input, output, info, settings.encoder_options)?;
     let encoder = remuxer.encoder();
-    let mut progress = job.stage("normalize", start, encoded_at - start);
-    let rendered = render(
-        input,
-        info,
-        settings.gain_db,
-        settings.ceiling_db,
-        job,
-        &mut progress,
-        Some(&mut remuxer),
-    )?;
-    job.check_cancelled()?;
-    remuxer.finish()?;
+    let monitor = remuxer.monitor_format();
+    let decoder = PcmDecoder::open(input, info)?;
+    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db)?;
+    let mut progress = job.stage(stage, start, end - start);
+    let channels = info.audio.channels as usize;
+    let total_frames = info.duration * info.audio.sample_rate as f64;
+
+    let (rendered, finished, measured) = thread::scope(|s| {
+        let (pcm_tx, pcm_rx) = sync_channel::<Vec<f32>>(QUEUE_BLOCKS);
+        let (enc_tx, enc_rx) = sync_channel::<ToEncoder>(QUEUE_BLOCKS);
+        let (mon_tx, mon_rx) = sync_channel::<Vec<f32>>(QUEUE_BLOCKS);
+
+        let reader = s.spawn(move || -> Result<()> {
+            let mut decoder = decoder;
+            loop {
+                let mut block = Vec::new();
+                if !decoder.read(&mut block)? || pcm_tx.send(block).is_err() {
+                    return Ok(());
+                }
+            }
+        });
+
+        // Ok(false): upstream stopped before asking to finish.
+        let writer = s.spawn(move || -> Result<bool> {
+            let mut remuxer = remuxer;
+            let forward = |remuxer: &mut Remuxer| {
+                let mut block = Vec::new();
+                while remuxer.read_monitor(&mut block) {
+                    if mon_tx.send(std::mem::take(&mut block)).is_err() {
+                        break;
+                    }
+                }
+            };
+            for message in enc_rx {
+                match message {
+                    ToEncoder::Block(block) => {
+                        remuxer.write(&block)?;
+                        forward(&mut remuxer);
+                    }
+                    ToEncoder::Finish => {
+                        remuxer.finish()?;
+                        forward(&mut remuxer);
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        });
+
+        let verifier = s.spawn(move || -> Result<Option<Measurement>> {
+            let Some(format) = monitor else {
+                return Ok(None);
+            };
+            let mut meter = EbuR128::new(format.channels, format.sample_rate, Mode::I | Mode::TRUE_PEAK)
+                .context("falha ao iniciar o medidor de loudness")?;
+            for block in mon_rx {
+                meter.add_frames_f32(&block).context("falha ao medir loudness")?;
+            }
+            analyze::read_measurement(&meter, format.channels).map(Some)
+        });
+
+        let rendered = (move || -> Result<Rendered> {
+            let send = |message: ToEncoder| enc_tx.send(message).map_err(|_| anyhow::Error::new(StageStopped));
+            let mut frames = 0u64;
+            for mut block in pcm_rx {
+                job.check_cancelled()?;
+                frames += (block.len() / channels) as u64;
+                let mut out = Vec::with_capacity(block.len());
+                chain.process(&mut block, &mut out)?;
+                send(ToEncoder::Block(out))?;
+                if total_frames > 0.0 {
+                    progress.update(frames as f64 / total_frames);
+                }
+            }
+            reader.join().expect("decoder thread panicked")?;
+            job.check_cancelled()?;
+            let mut out = Vec::new();
+            chain.flush(&mut out)?;
+            send(ToEncoder::Block(out))?;
+            send(ToEncoder::Finish)?;
+            chain.result()
+        })();
+        let finished = writer.join().expect("encoder thread panicked");
+        let measured = verifier.join().expect("meter thread panicked");
+        (rendered, finished, measured)
+    });
+
+    let rendered = match (rendered, finished) {
+        (Err(e), _) if e.is::<Cancelled>() => return Err(e),
+        (_, Err(e)) => return Err(e),
+        (Err(e), _) => return Err(e),
+        (Ok(_), Ok(false)) => bail!("a codificação terminou antes do fim do áudio"),
+        (Ok(r), Ok(true)) => r,
+    };
 
     let written = verify(output, info)?;
-    let mut progress = job.stage("verify", encoded_at, verified_at - encoded_at);
-    let actual = analyze::measure(output, &written, job, &mut progress)?;
+    let actual = match measured? {
+        Some(m) => m,
+        // No decoder for the encoded codec: read the file back instead.
+        None => analyze::measure(output, &written, job, &mut job.stage("verify", end, 0.0))?,
+    };
     Ok(Encoded {
         encoder,
         output_lufs: actual.integrated_lufs,
@@ -174,57 +282,74 @@ struct Rendered {
     limiter_reduction_db: f64,
 }
 
-/// Decode -> gain -> true-peak limiter -> meter, optionally feeding the
-/// result to the remuxer. Without a remuxer this is a dry run used to
-/// calibrate the gain.
-fn render(
+/// Gain -> true-peak limiter -> integrated-loudness meter.
+struct Chain {
+    gain: f32,
+    limiter: Limiter,
+    meter: EbuR128,
+}
+
+impl Chain {
+    fn new(info: &MediaInfo, gain_db: f64, ceiling_db: f64) -> Result<Self> {
+        let channels = info.audio.channels;
+        let sample_rate = info.audio.sample_rate;
+        Ok(Self {
+            gain: db_to_linear(gain_db) as f32,
+            limiter: Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32),
+            // Only integrated loudness: peaks are measured on the encoded audio.
+            meter: EbuR128::new(channels, sample_rate, Mode::I).context("falha ao iniciar o medidor de loudness")?,
+        })
+    }
+
+    /// Applies the gain to `block` in place and writes the limited audio to `out`.
+    fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
+        for sample in block.iter_mut() {
+            *sample *= self.gain;
+        }
+        self.limiter.process(block, out);
+        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+    }
+
+    /// Drains the limiter's look-ahead into `out`.
+    fn flush(&mut self, out: &mut Vec<f32>) -> Result<()> {
+        self.limiter.flush(out);
+        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+    }
+
+    fn result(&self) -> Result<Rendered> {
+        Ok(Rendered {
+            output_lufs: self.meter.loudness_global().context("falha ao calcular loudness")?,
+            limiter_reduction_db: -linear_to_db(self.limiter.min_gain),
+        })
+    }
+}
+
+/// Dry run used to calibrate the gain: decode -> chain, nothing is written.
+fn simulate(
     input: &Path,
     info: &MediaInfo,
     gain_db: f64,
     ceiling_db: f64,
     job: &Job,
     progress: &mut Progress,
-    mut sink: Option<&mut Remuxer>,
 ) -> Result<Rendered> {
-    let channels = info.audio.channels;
-    let sample_rate = info.audio.sample_rate;
-    let gain = db_to_linear(gain_db) as f32;
-    let mut limiter = Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32);
-    // Only integrated loudness: peaks are measured on the encoded file.
-    let mut meter = EbuR128::new(channels, sample_rate, Mode::I)
-        .context("falha ao iniciar o medidor de loudness")?;
+    let mut chain = Chain::new(info, gain_db, ceiling_db)?;
     let mut decoder = PcmDecoder::open(input, info)?;
-
-    let total_frames = info.duration * sample_rate as f64;
+    let channels = info.audio.channels as usize;
+    let total_frames = info.duration * info.audio.sample_rate as f64;
     let mut frames = 0u64;
     let mut block = Vec::new();
     let mut out = Vec::new();
-    let mut finished = false;
-    while !finished {
+    while decoder.read(&mut block)? {
         job.check_cancelled()?;
-        if decoder.read(&mut block)? {
-            frames += (block.len() / channels as usize) as u64;
-            for sample in block.iter_mut() {
-                *sample *= gain;
-            }
-            limiter.process(&block, &mut out);
-        } else {
-            limiter.flush(&mut out);
-            finished = true;
-        }
-        meter.add_frames_f32(&out).context("falha ao medir loudness")?;
-        if let Some(remuxer) = sink.as_deref_mut() {
-            remuxer.write(&out)?;
-        }
+        frames += (block.len() / channels) as u64;
+        chain.process(&mut block, &mut out)?;
         if total_frames > 0.0 {
             progress.update(frames as f64 / total_frames);
         }
     }
-
-    Ok(Rendered {
-        output_lufs: meter.loudness_global().context("falha ao calcular loudness")?,
-        limiter_reduction_db: -linear_to_db(limiter.min_gain),
-    })
+    chain.flush(&mut out)?;
+    chain.result()
 }
 
 /// Sanity-check the new file before it replaces the original.

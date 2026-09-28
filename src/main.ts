@@ -20,6 +20,7 @@ const STAGE_LABELS: Record<Stage, string> = {
   analyze: "Medindo o loudness do áudio…",
   calibrate: "Ajustando o limitador para atingir o alvo…",
   normalize: "Aplicando normalização…",
+  retry: "Recodificando para conter picos do codificador…",
   verify: "Conferindo o arquivo gerado…",
   finalize: "Verificando e substituindo o arquivo…",
 };

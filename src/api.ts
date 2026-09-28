@@ -65,7 +65,7 @@ export interface NormalizeReport {
   sizeAfter: number;
 }
 
-export type Stage = "analyze" | "calibrate" | "normalize" | "verify" | "finalize";
+export type Stage = "analyze" | "calibrate" | "normalize" | "retry" | "verify" | "finalize";
 
 export interface ProgressEvent {
   stage: Stage;
