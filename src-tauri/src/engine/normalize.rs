@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use super::analyze::{self, Measurement, MAX_GAIN_DB};
-use super::av::{self, MediaInfo, PcmDecoder, Remuxer};
+use super::analyze::{self, Measurement, CACHE_LIMIT_BYTES, MAX_GAIN_DB};
+use super::av::{self, AudioCache, AudioSource, MediaInfo, PcmDecoder, Remuxer};
 use super::job::{Cancelled, Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::limiter::Limiter;
 use super::{db_to_linear, linear_to_db, Targets};
@@ -45,9 +45,16 @@ pub struct NormalizeReport {
     pub size_after: u64,
 }
 
-/// `measured` comes from a previous analysis of the same file and lets us
-/// skip the measuring pass.
-pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &Job) -> Result<NormalizeReport> {
+/// `measured` and `cache` come from a previous analysis of the same file: the
+/// first skips the measuring pass, the second lets every decode run from
+/// memory so the file itself is read only once (by the remuxer).
+pub fn run(
+    targets: Targets,
+    input: &Path,
+    measured: Option<Measurement>,
+    mut cache: Option<Arc<AudioCache>>,
+    job: &Job,
+) -> Result<NormalizeReport> {
     let started = Instant::now();
     let info = av::probe(input)?;
     let size_before = fs::metadata(input).context("não foi possível ler o arquivo")?.len();
@@ -59,8 +66,15 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
         None => {
             let mut progress = job.stage("analyze", cursor, 30.0);
             cursor += 30.0;
-            analyze::measure(input, &info, job, &mut progress)?
+            let mut decoder = PcmDecoder::open(input, &info, CACHE_LIMIT_BYTES)?;
+            let measurement = analyze::measure(&mut decoder, &info, job, &mut progress)?;
+            cache = cache.or_else(|| decoder.take_cache().map(Arc::new));
+            measurement
         }
+    };
+    let source = match cache {
+        Some(cache) => AudioSource::Cache(cache),
+        None => AudioSource::File(input),
     };
     let ceiling_db = targets.true_peak_db - LIMITER_MARGIN_DB;
     let mut gain_db = (targets.target_lufs - measurement.integrated_lufs).clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
@@ -69,12 +83,12 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
     if predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB {
         let mut progress = job.stage("calibrate", cursor, 15.0);
         cursor += 15.0;
-        gain_db = calibrate(input, &info, gain_db, ceiling_db, targets.target_lufs, job, &mut progress)?;
+        gain_db = calibrate(&source, &info, gain_db, ceiling_db, targets.target_lufs, job, &mut progress)?;
     }
 
     let settings = EncodeSettings { gain_db, ceiling_db, encoder_options: "" };
     let temp = TempFile(temp_path(input, "normalizing")?);
-    let mut encoded = encode(input, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
+    let mut encoded = encode(input, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
     // Lossy encoders can overshoot the ceiling. The native AAC encoder's
     // default coder occasionally does so badly (hard transients right at
@@ -82,7 +96,7 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
     if encoded.true_peak_db > targets.true_peak_db + PEAK_TOLERANCE_DB && encoded.encoder == "aac" {
         let retry = TempFile(temp_path(input, "normalizing-retry")?);
         let settings = EncodeSettings { encoder_options: "aac_coder=fast", ..settings };
-        let second = encode(input, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
+        let second = encode(input, &source, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
         if second.true_peak_db < encoded.true_peak_db {
             fs::rename(&retry.0, &temp.0).context("falha ao preparar o arquivo final")?;
             std::mem::forget(retry);
@@ -131,8 +145,10 @@ enum ToEncoder {
 /// Render into `output` and measure what was encoded. Runs as a pipeline:
 /// decode -> [gain, limiter, meter] -> encode + mux -> meter of the encoded
 /// audio decoded back, each stage on its own thread.
+#[allow(clippy::too_many_arguments)]
 fn encode(
     input: &Path,
+    source: &AudioSource,
     output: &Path,
     info: &MediaInfo,
     settings: &EncodeSettings,
@@ -142,7 +158,7 @@ fn encode(
     let remuxer = Remuxer::open(input, output, info, settings.encoder_options)?;
     let encoder = remuxer.encoder();
     let monitor = remuxer.monitor_format();
-    let decoder = PcmDecoder::open(input, info)?;
+    let decoder = source.open(info)?;
     let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db)?;
     let mut progress = job.stage(stage, start, end - start);
     let channels = info.audio.channels as usize;
@@ -240,7 +256,10 @@ fn encode(
     let actual = match measured? {
         Some(m) => m,
         // No decoder for the encoded codec: read the file back instead.
-        None => analyze::measure(output, &written, job, &mut job.stage("verify", end, 0.0))?,
+        None => {
+            let mut decoder = PcmDecoder::open(output, &written, 0)?;
+            analyze::measure(&mut decoder, &written, job, &mut job.stage("verify", end, 0.0))?
+        }
     };
     Ok(Encoded {
         encoder,
@@ -301,7 +320,7 @@ impl Chain {
 /// One decode feeds a chain per candidate gain, each on its own thread; the
 /// answer is interpolated between the candidates that bracket the target.
 fn calibrate(
-    input: &Path,
+    source: &AudioSource,
     info: &MediaInfo,
     base_gain_db: f64,
     ceiling_db: f64,
@@ -318,7 +337,7 @@ fn calibrate(
         .iter()
         .map(|&gain| Chain::new(info, gain, ceiling_db))
         .collect::<Result<Vec<_>>>()?;
-    let mut decoder = PcmDecoder::open(input, info)?;
+    let mut decoder = source.open(info)?;
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
 
@@ -464,9 +483,9 @@ mod tests {
         for file in files.split(';').filter(|f| !f.is_empty()) {
             let path = Path::new(file);
             let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-            let before = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
-            let report = run(targets, path, None, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
-            let after = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            let before = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
+            let report = run(targets, path, None, None, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            let after = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
             println!(
                 "{file}: {:.1} -> {:.1} LUFS (report {:.1}, TP {:.1}), TP {:.1} dBTP, limiter {:.1} dB, {:.2}s -> {:.2}s",
                 before.measurement.integrated_lufs,

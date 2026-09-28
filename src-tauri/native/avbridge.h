@@ -30,9 +30,24 @@ void avb_init(void);
 
 int avb_probe(const char *path, AvbMediaInfo *info, char *err);
 
+/* The first audio track's compressed packets kept in memory, so it can be
+ * decoded again without reading the (possibly huge) file. Read-only once
+ * taken from a decoder; safe to share between decoders. */
+typedef struct AvbAudioCache AvbAudioCache;
+
+void avb_cache_free(AvbAudioCache *cache);
+int64_t avb_cache_bytes(const AvbAudioCache *cache);
+
 typedef struct AvbDecoder AvbDecoder;
 
-AvbDecoder *avb_decoder_open(const char *path, char *err);
+/* With `record_limit` > 0 the packets read are also recorded, up to that
+ * many bytes; see avb_decoder_take_cache. */
+AvbDecoder *avb_decoder_open(const char *path, int64_t record_limit, char *err);
+/* Decodes from a cache instead of the file. The cache must outlive it. */
+AvbDecoder *avb_decoder_open_cache(const AvbAudioCache *cache, char *err);
+/* After the whole track was read: hands over the recording (caller frees),
+ * or NULL when not recording, not finished, or over the limit. */
+AvbAudioCache *avb_decoder_take_cache(AvbDecoder *dec);
 /* Reads up to `max_frames` interleaved frames. Returns the number of frames
  * read, 0 at end of stream, negative on error. */
 int avb_decoder_read(AvbDecoder *dec, float *out, int max_frames, char *err);

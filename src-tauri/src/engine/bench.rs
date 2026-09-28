@@ -33,7 +33,7 @@ fn bench_components() {
 
     // 1. demux + decode the whole file.
     let t = Instant::now();
-    let mut dec = PcmDecoder::open(path, &info).unwrap();
+    let mut dec = PcmDecoder::open(path, &info, 0).unwrap();
     let mut block = Vec::new();
     let mut pcm: Vec<f32> = Vec::new();
     let keep = (sr as usize) * (ch as usize) * 300; // first 5 minutes kept in RAM
@@ -99,7 +99,10 @@ fn bench_pipeline() {
     let analysis = analyze::run(targets, path, &job).unwrap();
     let t1 = Instant::now();
     marks.lock().unwrap().clear();
-    let report = normalize::run(targets, path, Some(analysis.measurement), &job).unwrap();
+    let measured = Some(analysis.report.measurement);
+    let cache = analysis.cache.map(Arc::new);
+    println!("cached audio                {:>7.1} MB", cache.as_ref().map_or(0.0, |c| c.bytes() as f64 / 1e6));
+    let report = normalize::run(targets, path, measured, cache, &job).unwrap();
     let t2 = Instant::now();
     println!("analyze total               {:>7.2}s", (t1 - t0).as_secs_f64());
     let m = marks.lock().unwrap();
@@ -119,7 +122,7 @@ fn bench_analyze() {
     let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
     for _ in 0..3 {
         let t = Instant::now();
-        let report = analyze::run(targets, Path::new(&path), &job).unwrap();
+        let report = analyze::run(targets, Path::new(&path), &job).unwrap().report;
         println!(
             "analyze                     {:>7.2}s  (I {:.2}, TP {:.2}, LRA {:.2})",
             t.elapsed().as_secs_f64(),

@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail, Result};
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::path::Path;
 use std::ptr::NonNull;
-use std::sync::Once;
+use std::sync::{Arc, Once};
 
 const ERR_LEN: usize = 512;
 
@@ -17,6 +17,11 @@ struct AvbMediaInfo {
     channels: c_int,
     bit_rate: i64,
     codec: [c_char; 32],
+}
+
+#[repr(C)]
+struct AvbAudioCache {
+    _private: [u8; 0],
 }
 
 #[repr(C)]
@@ -32,7 +37,12 @@ struct AvbRemuxer {
 extern "C" {
     fn avb_init();
     fn avb_probe(path: *const c_char, info: *mut AvbMediaInfo, err: *mut c_char) -> c_int;
-    fn avb_decoder_open(path: *const c_char, err: *mut c_char) -> *mut AvbDecoder;
+    fn avb_cache_free(cache: *mut AvbAudioCache);
+    #[cfg(test)]
+    fn avb_cache_bytes(cache: *const AvbAudioCache) -> i64;
+    fn avb_decoder_open(path: *const c_char, record_limit: i64, err: *mut c_char) -> *mut AvbDecoder;
+    fn avb_decoder_open_cache(cache: *const AvbAudioCache, err: *mut c_char) -> *mut AvbDecoder;
+    fn avb_decoder_take_cache(dec: *mut AvbDecoder) -> *mut AvbAudioCache;
     fn avb_decoder_read(dec: *mut AvbDecoder, out: *mut f32, max_frames: c_int, err: *mut c_char) -> c_int;
     fn avb_decoder_close(dec: *mut AvbDecoder);
     fn avb_remuxer_open(
@@ -130,23 +140,85 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
     })
 }
 
+/// The first audio track's compressed packets held in memory, so it can be
+/// decoded again without reading the file.
+pub struct AudioCache {
+    ptr: NonNull<AvbAudioCache>,
+}
+
+impl AudioCache {
+    #[cfg(test)]
+    pub fn bytes(&self) -> u64 {
+        // SAFETY: live handle.
+        unsafe { avb_cache_bytes(self.ptr.as_ptr()) }.max(0) as u64
+    }
+}
+
+// SAFETY: a taken cache is never mutated again; decoders only take new
+// references to its packets (atomic refcounts).
+unsafe impl Send for AudioCache {}
+unsafe impl Sync for AudioCache {}
+
+impl Drop for AudioCache {
+    fn drop(&mut self) {
+        // SAFETY: owned handle, freed once; decoders reading it hold an Arc.
+        unsafe { avb_cache_free(self.ptr.as_ptr()) }
+    }
+}
+
+/// Where decoders read the audio from.
+#[derive(Clone)]
+pub enum AudioSource<'a> {
+    File(&'a Path),
+    Cache(Arc<AudioCache>),
+}
+
+impl AudioSource<'_> {
+    pub fn open(&self, info: &MediaInfo) -> Result<PcmDecoder> {
+        match self {
+            AudioSource::File(path) => PcmDecoder::open(path, info, 0),
+            AudioSource::Cache(cache) => PcmDecoder::open_cache(cache.clone(), info),
+        }
+    }
+}
+
 /// Decodes the first audio track to interleaved f32 PCM.
 pub struct PcmDecoder {
     ptr: NonNull<AvbDecoder>,
     channels: usize,
+    /// Keeps the cache alive while decoding from it.
+    _source: Option<Arc<AudioCache>>,
 }
 
 impl PcmDecoder {
     const BLOCK_FRAMES: usize = 8192;
 
-    pub fn open(path: &Path, info: &MediaInfo) -> Result<Self> {
+    /// With `record_limit` > 0 the compressed packets are recorded too (up
+    /// to that many bytes); see [`PcmDecoder::take_cache`].
+    pub fn open(path: &Path, info: &MediaInfo, record_limit: u64) -> Result<Self> {
         init();
         let path = c_path(path)?;
         let mut err = ErrBuf::new();
         // SAFETY: valid path and error buffer; null is handled below.
-        let raw = unsafe { avb_decoder_open(path.as_ptr(), err.ptr()) };
+        let raw = unsafe { avb_decoder_open(path.as_ptr(), record_limit.min(i64::MAX as u64) as i64, err.ptr()) };
         let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
-        Ok(Self { ptr, channels: info.audio.channels as usize })
+        Ok(Self { ptr, channels: info.audio.channels as usize, _source: None })
+    }
+
+    pub fn open_cache(cache: Arc<AudioCache>, info: &MediaInfo) -> Result<Self> {
+        init();
+        let mut err = ErrBuf::new();
+        // SAFETY: the cache is kept alive by `_source` for the decoder's life.
+        let raw = unsafe { avb_decoder_open_cache(cache.ptr.as_ptr(), err.ptr()) };
+        let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
+        Ok(Self { ptr, channels: info.audio.channels as usize, _source: Some(cache) })
+    }
+
+    /// The recording, once the whole track was read without exceeding the
+    /// limit.
+    pub fn take_cache(&mut self) -> Option<AudioCache> {
+        // SAFETY: live handle; ownership of the returned cache moves to us.
+        NonNull::new(unsafe { avb_decoder_take_cache(self.ptr.as_ptr()) }).map(|ptr| AudioCache { ptr })
     }
 
     /// Replace `out` with the next block of frames; `false` at end of stream.

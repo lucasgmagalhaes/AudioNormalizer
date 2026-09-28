@@ -9,12 +9,16 @@ use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 use std::thread;
 
-use super::av::{self, MediaInfo, PcmDecoder};
+use super::av::{self, AudioCache, MediaInfo, PcmDecoder};
 use super::job::{Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::{linear_to_db, Targets};
 
 /// Largest gain change we are willing to apply in either direction.
 pub const MAX_GAIN_DB: f64 = 24.0;
+
+/// Most compressed audio kept in memory to decode the track again without
+/// reading the file (30 minutes of 192 kb/s AAC is about 43 MB).
+pub const CACHE_LIMIT_BYTES: u64 = 512 << 20;
 
 /// Below this the gated integrated loudness is not meaningful.
 const SILENCE_LUFS: f64 = -70.0;
@@ -77,12 +81,20 @@ pub struct AnalysisReport {
     pub assessment: Assessment,
 }
 
-pub fn run(targets: Targets, input: &Path, job: &Job) -> Result<AnalysisReport> {
+pub struct Analysis {
+    pub report: AnalysisReport,
+    /// The track's compressed audio, when it fit under [`CACHE_LIMIT_BYTES`].
+    pub cache: Option<AudioCache>,
+}
+
+pub fn run(targets: Targets, input: &Path, job: &Job) -> Result<Analysis> {
     let info = av::probe(input)?;
     let mut progress = job.stage("analyze", 0.0, 100.0);
-    let measurement = measure(input, &info, job, &mut progress)?;
+    let mut decoder = PcmDecoder::open(input, &info, CACHE_LIMIT_BYTES)?;
+    let measurement = measure(&mut decoder, &info, job, &mut progress)?;
     progress.update(1.0);
-    Ok(AnalysisReport {
+    let cache = decoder.take_cache();
+    let report = AnalysisReport {
         media: MediaSummary {
             duration: info.duration,
             codec: info.audio.codec.clone(),
@@ -92,17 +104,17 @@ pub fn run(targets: Targets, input: &Path, job: &Job) -> Result<AnalysisReport> 
         },
         measurement,
         assessment: assess(&measurement, targets),
-    })
+    };
+    Ok(Analysis { report, cache })
 }
 
 /// Decode the first audio track and measure it. The decoder feeds, on
 /// separate threads, one meter for loudness/LRA/sample peak and one
 /// true-peak meter per channel (true peak is the expensive part).
-pub fn measure(input: &Path, info: &MediaInfo, job: &Job, progress: &mut Progress) -> Result<Measurement> {
+pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: &mut Progress) -> Result<Measurement> {
     let channels = info.audio.channels;
     let rate = info.audio.sample_rate;
     let stride = channels as usize;
-    let mut decoder = PcmDecoder::open(input, info)?;
     let total_frames = info.duration * rate as f64;
 
     thread::scope(|s| {

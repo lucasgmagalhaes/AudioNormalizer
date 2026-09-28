@@ -195,8 +195,94 @@ int avb_probe(const char *path, AvbMediaInfo *info, char *err)
 /* decoder                                                                   */
 /* ------------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------------ */
+/* audio packet cache                                                        */
+/* ------------------------------------------------------------------------ */
+
+struct AvbAudioCache {
+    AVCodecParameters *par;
+    AVRational time_base;
+    AVPacket **packets;
+    int count;
+    int capacity;
+    int64_t bytes;
+    int64_t limit;
+    int overflow;
+};
+
+void avb_cache_free(AvbAudioCache *c)
+{
+    if (!c)
+        return;
+    for (int i = 0; i < c->count; i++)
+        av_packet_free(&c->packets[i]);
+    av_free(c->packets);
+    avcodec_parameters_free(&c->par);
+    av_free(c);
+}
+
+int64_t avb_cache_bytes(const AvbAudioCache *c)
+{
+    return c->bytes;
+}
+
+static AvbAudioCache *cache_new(const AVStream *st, int64_t limit)
+{
+    AvbAudioCache *c = av_mallocz(sizeof(*c));
+    if (!c)
+        return NULL;
+    c->par = avcodec_parameters_alloc();
+    if (!c->par || avcodec_parameters_copy(c->par, st->codecpar) < 0) {
+        avb_cache_free(c);
+        return NULL;
+    }
+    c->time_base = st->time_base;
+    c->limit = limit;
+    return c;
+}
+
+/* Keeps a reference to `pkt`. Past the size limit the recording is dropped
+ * (memory released) and the cache marked unusable. */
+static void cache_record(AvbAudioCache *c, const AVPacket *pkt)
+{
+    if (c->overflow)
+        return;
+    if (c->bytes + pkt->size > c->limit) {
+        for (int i = 0; i < c->count; i++)
+            av_packet_free(&c->packets[i]);
+        c->count = 0;
+        c->bytes = 0;
+        c->overflow = 1;
+        return;
+    }
+    if (c->count == c->capacity) {
+        int capacity = c->capacity ? c->capacity * 2 : 4096;
+        AVPacket **grown = av_realloc_array(c->packets, capacity, sizeof(*grown));
+        if (!grown) {
+            c->overflow = 1;
+            return;
+        }
+        c->packets = grown;
+        c->capacity = capacity;
+    }
+    AVPacket *copy = av_packet_clone(pkt);
+    if (!copy) {
+        c->overflow = 1;
+        return;
+    }
+    c->packets[c->count++] = copy;
+    c->bytes += pkt->size;
+}
+
+/* ------------------------------------------------------------------------ */
+/* decoder                                                                   */
+/* ------------------------------------------------------------------------ */
+
 struct AvbDecoder {
-    AVFormatContext *fmt;
+    AVFormatContext *fmt;       /* NULL when decoding from a cache */
+    const AvbAudioCache *source;
+    int next_packet;
+    AvbAudioCache *recording;   /* owned until taken */
     AVCodecContext *codec;
     AVPacket *pkt;
     AVFrame *frame;
@@ -211,6 +297,7 @@ void avb_decoder_close(AvbDecoder *d)
 {
     if (!d)
         return;
+    avb_cache_free(d->recording);
     converter_free(&d->conv);
     av_audio_fifo_free(d->fifo);
     av_frame_free(&d->frame);
@@ -220,7 +307,39 @@ void avb_decoder_close(AvbDecoder *d)
     av_free(d);
 }
 
-AvbDecoder *avb_decoder_open(const char *path, char *err)
+/* Codec, converter and buffers shared by both ways of opening. */
+static int decoder_init(AvbDecoder *d, const AVCodecParameters *par, AVRational time_base, char *err)
+{
+    const AVCodec *codec = avcodec_find_decoder(par->codec_id);
+    if (!codec)
+        return fail(err, "codec de áudio não suportado", 0);
+    d->codec = avcodec_alloc_context3(codec);
+    if (!d->codec)
+        return fail(err, "memória insuficiente", AVERROR(ENOMEM));
+    int ret = avcodec_parameters_to_context(d->codec, par);
+    if (ret >= 0) {
+        d->codec->pkt_timebase = time_base;
+        ret = avcodec_open2(d->codec, codec, NULL);
+    }
+    if (ret < 0)
+        return fail(err, "não foi possível abrir o decodificador de áudio", ret);
+
+    /* Output: interleaved float at the source rate / layout. */
+    d->conv.out_fmt = AV_SAMPLE_FMT_FLT;
+    d->conv.out_rate = par->sample_rate;
+    ret = pcm_layout(&par->ch_layout, &d->conv.out_layout);
+    if (ret < 0)
+        return fail(err, "layout de canais inválido", ret);
+
+    d->pkt = av_packet_alloc();
+    d->frame = av_frame_alloc();
+    d->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, d->conv.out_layout.nb_channels, 8192);
+    if (!d->pkt || !d->frame || !d->fifo)
+        return fail(err, "memória insuficiente", AVERROR(ENOMEM));
+    return 0;
+}
+
+AvbDecoder *avb_decoder_open(const char *path, int64_t record_limit, char *err)
 {
     AvbDecoder *d = av_mallocz(sizeof(*d));
     if (!d) {
@@ -240,38 +359,10 @@ AvbDecoder *avb_decoder_open(const char *path, char *err)
         if ((int)i != d->stream)
             d->fmt->streams[i]->discard = AVDISCARD_ALL;
 
-    const AVCodecParameters *par = d->fmt->streams[d->stream]->codecpar;
-    const AVCodec *codec = avcodec_find_decoder(par->codec_id);
-    if (!codec) {
-        fail(err, "codec de áudio não suportado", 0);
+    const AVStream *st = d->fmt->streams[d->stream];
+    if (decoder_init(d, st->codecpar, st->time_base, err) < 0)
         goto error;
-    }
-    d->codec = avcodec_alloc_context3(codec);
-    if (!d->codec) {
-        fail(err, "memória insuficiente", AVERROR(ENOMEM));
-        goto error;
-    }
-    int ret = avcodec_parameters_to_context(d->codec, par);
-    if (ret >= 0)
-        ret = avcodec_open2(d->codec, codec, NULL);
-    if (ret < 0) {
-        fail(err, "não foi possível abrir o decodificador de áudio", ret);
-        goto error;
-    }
-
-    /* Output: interleaved float at the source rate / layout. */
-    d->conv.out_fmt = AV_SAMPLE_FMT_FLT;
-    d->conv.out_rate = par->sample_rate;
-    ret = pcm_layout(&par->ch_layout, &d->conv.out_layout);
-    if (ret < 0) {
-        fail(err, "layout de canais inválido", ret);
-        goto error;
-    }
-
-    d->pkt = av_packet_alloc();
-    d->frame = av_frame_alloc();
-    d->fifo = av_audio_fifo_alloc(AV_SAMPLE_FMT_FLT, d->conv.out_layout.nb_channels, 8192);
-    if (!d->pkt || !d->frame || !d->fifo) {
+    if (record_limit > 0 && !(d->recording = cache_new(st, record_limit))) {
         fail(err, "memória insuficiente", AVERROR(ENOMEM));
         goto error;
     }
@@ -282,7 +373,52 @@ error:
     return NULL;
 }
 
-/* Advances decoding by one step: one decoded frame or one demuxed packet. */
+AvbDecoder *avb_decoder_open_cache(const AvbAudioCache *cache, char *err)
+{
+    AvbDecoder *d = av_mallocz(sizeof(*d));
+    if (!d) {
+        fail(err, "memória insuficiente", AVERROR(ENOMEM));
+        return NULL;
+    }
+    d->source = cache;
+    if (decoder_init(d, cache->par, cache->time_base, err) < 0) {
+        avb_decoder_close(d);
+        return NULL;
+    }
+    return d;
+}
+
+AvbAudioCache *avb_decoder_take_cache(AvbDecoder *d)
+{
+    AvbAudioCache *c = d->recording;
+    if (!c || c->overflow || !d->input_done)
+        return NULL;
+    d->recording = NULL;
+    return c;
+}
+
+/* Next packet of the decoded track: from the cache or the file. */
+static int next_packet(AvbDecoder *d)
+{
+    if (d->source) {
+        if (d->next_packet >= d->source->count)
+            return AVERROR_EOF;
+        return av_packet_ref(d->pkt, d->source->packets[d->next_packet++]);
+    }
+    for (;;) {
+        int ret = av_read_frame(d->fmt, d->pkt);
+        if (ret < 0)
+            return ret;
+        if (d->pkt->stream_index == d->stream) {
+            if (d->recording)
+                cache_record(d->recording, d->pkt);
+            return 0;
+        }
+        av_packet_unref(d->pkt);
+    }
+}
+
+/* Advances decoding by one step: one decoded frame or one packet. */
 static int decoder_step(AvbDecoder *d, char *err)
 {
     int ret = avcodec_receive_frame(d->codec, d->frame);
@@ -305,7 +441,7 @@ static int decoder_step(AvbDecoder *d, char *err)
     if (d->input_done)
         return fail(err, "o decodificador parou de responder", 0);
 
-    ret = av_read_frame(d->fmt, d->pkt);
+    ret = next_packet(d);
     if (ret == AVERROR_EOF) {
         d->input_done = 1;
         return avcodec_send_packet(d->codec, NULL);
@@ -313,15 +449,11 @@ static int decoder_step(AvbDecoder *d, char *err)
     if (ret < 0)
         return fail(err, "falha ao ler o arquivo", ret);
 
-    if (d->pkt->stream_index == d->stream) {
-        ret = avcodec_send_packet(d->codec, d->pkt);
-        /* Skip corrupt packets like the ffmpeg CLI does. */
-        if (ret < 0 && ret != AVERROR_INVALIDDATA && ret != AVERROR(EAGAIN)) {
-            av_packet_unref(d->pkt);
-            return fail(err, "falha ao decodificar o áudio", ret);
-        }
-    }
+    ret = avcodec_send_packet(d->codec, d->pkt);
     av_packet_unref(d->pkt);
+    /* Skip corrupt packets like the ffmpeg CLI does. */
+    if (ret < 0 && ret != AVERROR_INVALIDDATA && ret != AVERROR(EAGAIN))
+        return fail(err, "falha ao decodificar o áudio", ret);
     return 0;
 }
 

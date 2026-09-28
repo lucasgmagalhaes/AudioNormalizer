@@ -86,7 +86,7 @@ async fn analyze_file(
 ) -> Result<AnalysisReport, CommandError> {
     targets.validate()?;
     let path = PathBuf::from(path);
-    run_job(app, slot.inner().clone(), move |job| analyze::run(targets, &path, job)).await
+    run_job(app, slot.inner().clone(), move |job| analyze::run(targets, &path, job).map(|a| a.report)).await
 }
 
 /// Re-evaluate an existing measurement against new targets (no decoding).
@@ -107,7 +107,7 @@ async fn normalize_file(
     targets.validate()?;
     let path = PathBuf::from(path);
     run_job(app, slot.inner().clone(), move |job| {
-        normalize::run(targets, &path, measured, job)
+        normalize::run(targets, &path, measured, None, job)
     })
     .await
 }

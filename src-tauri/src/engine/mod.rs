@@ -4,7 +4,7 @@
 //! measurement, gain and peak limiting all happen here on raw PCM.
 
 pub mod analyze;
-mod av;
+pub mod av;
 mod bench;
 pub mod job;
 mod limiter;
