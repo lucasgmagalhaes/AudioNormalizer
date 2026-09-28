@@ -5,6 +5,7 @@
 
 pub mod analyze;
 mod av;
+mod bench;
 pub mod job;
 mod limiter;
 pub mod normalize;
