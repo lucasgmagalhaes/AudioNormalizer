@@ -110,3 +110,22 @@ fn bench_pipeline() {
     println!("normalize total             {:>7.2}s  ({:.1} -> {:.1} LUFS, TP {:.1})",
         (t2 - t1).as_secs_f64(), report.input_lufs, report.output_lufs, report.output_true_peak_db);
 }
+
+#[test]
+#[ignore]
+fn bench_analyze() {
+    let path = env("BENCH_FILE");
+    let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+    let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+    for _ in 0..3 {
+        let t = Instant::now();
+        let report = analyze::run(targets, Path::new(&path), &job).unwrap();
+        println!(
+            "analyze                     {:>7.2}s  (I {:.2}, TP {:.2}, LRA {:.2})",
+            t.elapsed().as_secs_f64(),
+            report.measurement.integrated_lufs,
+            report.measurement.true_peak_db,
+            report.measurement.loudness_range
+        );
+    }
+}
