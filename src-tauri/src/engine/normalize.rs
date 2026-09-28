@@ -7,6 +7,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -23,11 +24,9 @@ const LIMITER_MARGIN_DB: f64 = 0.5;
 /// gain reduction, a decode-only pass measures the real result first and the
 /// gain is corrected so the output still lands on the target.
 const CALIBRATE_ABOVE_DB: f64 = 1.0;
-const MAX_CALIBRATION_PASSES: usize = 2;
-/// Upper bound on the extra gain calibration may add (more means more limiting).
-const MAX_CALIBRATION_BOOST_DB: f64 = 6.0;
-/// Close enough to the target to stop calibrating.
-const CALIBRATION_TOLERANCE_LU: f64 = 0.3;
+/// Extra gains rendered side by side during calibration; the last one is the
+/// most calibration may add (more gain means more limiting).
+const CALIBRATION_STEPS_DB: [f64; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
 /// Encoded true peak allowed above the ceiling before re-encoding.
 const PEAK_TOLERANCE_DB: f64 = 0.5;
 
@@ -68,20 +67,9 @@ pub fn run(targets: Targets, input: &Path, measured: Option<Measurement>, job: &
 
     let predicted_limiting = measurement.true_peak_db + gain_db - ceiling_db;
     if predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB {
-        let base_gain = gain_db;
-        let span = 10.0;
-        for _ in 0..MAX_CALIBRATION_PASSES {
-            let mut progress = job.stage("calibrate", cursor, span);
-            cursor += span;
-            let pass = simulate(input, &info, gain_db, ceiling_db, job, &mut progress)?;
-            let miss = targets.target_lufs - pass.output_lufs;
-            if miss.abs() < CALIBRATION_TOLERANCE_LU {
-                break;
-            }
-            gain_db = (gain_db + miss)
-                .clamp(base_gain, base_gain + MAX_CALIBRATION_BOOST_DB)
-                .min(MAX_GAIN_DB);
-        }
+        let mut progress = job.stage("calibrate", cursor, 15.0);
+        cursor += 15.0;
+        gain_db = calibrate(input, &info, gain_db, ceiling_db, targets.target_lufs, job, &mut progress)?;
     }
 
     let settings = EncodeSettings { gain_db, ceiling_db, encoder_options: "" };
@@ -324,32 +312,94 @@ impl Chain {
     }
 }
 
-/// Dry run used to calibrate the gain: decode -> chain, nothing is written.
-fn simulate(
+/// Dry run that finds the gain which, after limiting, lands on `target`.
+/// One decode feeds a chain per candidate gain, each on its own thread; the
+/// answer is interpolated between the candidates that bracket the target.
+fn calibrate(
     input: &Path,
     info: &MediaInfo,
-    gain_db: f64,
+    base_gain_db: f64,
     ceiling_db: f64,
+    target_lufs: f64,
     job: &Job,
     progress: &mut Progress,
-) -> Result<Rendered> {
-    let mut chain = Chain::new(info, gain_db, ceiling_db)?;
+) -> Result<f64> {
+    let mut gains: Vec<f64> = CALIBRATION_STEPS_DB
+        .iter()
+        .map(|step| (base_gain_db + step).min(MAX_GAIN_DB))
+        .collect();
+    gains.dedup();
+    let chains = gains
+        .iter()
+        .map(|&gain| Chain::new(info, gain, ceiling_db))
+        .collect::<Result<Vec<_>>>()?;
     let mut decoder = PcmDecoder::open(input, info)?;
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
-    let mut frames = 0u64;
-    let mut block = Vec::new();
-    let mut out = Vec::new();
-    while decoder.read(&mut block)? {
-        job.check_cancelled()?;
-        frames += (block.len() / channels) as u64;
-        chain.process(&mut block, &mut out)?;
-        if total_frames > 0.0 {
-            progress.update(frames as f64 / total_frames);
+
+    let loudness = thread::scope(|s| -> Result<Vec<f64>> {
+        let mut senders = Vec::with_capacity(chains.len());
+        let mut workers = Vec::with_capacity(chains.len());
+        for mut chain in chains {
+            let (tx, rx) = sync_channel::<Arc<Vec<f32>>>(QUEUE_BLOCKS);
+            senders.push(tx);
+            workers.push(s.spawn(move || -> Result<f64> {
+                let mut block = Vec::new();
+                let mut out = Vec::new();
+                for shared in rx {
+                    block.clear();
+                    block.extend_from_slice(&shared);
+                    chain.process(&mut block, &mut out)?;
+                }
+                chain.flush(&mut out)?;
+                Ok(chain.result()?.output_lufs)
+            }));
+        }
+
+        let fed = (|| -> Result<()> {
+            let mut frames = 0u64;
+            let mut block = Vec::new();
+            while decoder.read(&mut block)? {
+                job.check_cancelled()?;
+                frames += (block.len() / channels) as u64;
+                let shared = Arc::new(std::mem::take(&mut block));
+                for tx in &senders {
+                    tx.send(shared.clone()).map_err(|_| anyhow::Error::new(StageStopped))?;
+                }
+                if total_frames > 0.0 {
+                    progress.update(frames as f64 / total_frames);
+                }
+            }
+            Ok(())
+        })();
+        drop(senders);
+        let results: Vec<Result<f64>> = workers
+            .into_iter()
+            .map(|w| w.join().expect("calibration thread panicked"))
+            .collect();
+        match fed {
+            Err(e) if !e.is::<StageStopped>() => Err(e),
+            _ => results.into_iter().collect(),
+        }
+    })?;
+
+    Ok(interpolate_gain(&gains, &loudness, target_lufs))
+}
+
+/// Gain whose loudness hits `target`, by linear interpolation over the
+/// measured (gain, loudness) pairs; loudness grows with gain.
+fn interpolate_gain(gains: &[f64], loudness: &[f64], target: f64) -> f64 {
+    if target <= loudness[0] {
+        return gains[0];
+    }
+    for i in 1..gains.len() {
+        if target <= loudness[i] {
+            let span = (loudness[i] - loudness[i - 1]).max(1e-9);
+            let t = (target - loudness[i - 1]) / span;
+            return gains[i - 1] + t * (gains[i] - gains[i - 1]);
         }
     }
-    chain.flush(&mut out)?;
-    chain.result()
+    gains[gains.len() - 1]
 }
 
 /// Sanity-check the new file before it replaces the original.
@@ -406,6 +456,16 @@ impl Drop for TempFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interpolates_calibration_gain() {
+        let gains = [6.0, 7.5, 9.0];
+        let loudness = [-16.0, -15.0, -13.5];
+        assert_eq!(interpolate_gain(&gains, &loudness, -16.5), 6.0);
+        assert!((interpolate_gain(&gains, &loudness, -15.5) - 6.75).abs() < 1e-9);
+        assert!((interpolate_gain(&gains, &loudness, -14.0) - 8.5).abs() < 1e-9);
+        assert_eq!(interpolate_gain(&gains, &loudness, -12.0), 9.0);
+    }
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
