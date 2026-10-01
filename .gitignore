@@ -1,8 +1,8 @@
 node_modules/
 dist/
-src-tauri/target/
-src-tauri/gen/
+backend/target/
+backend/gen/
 # FFmpeg DLLs staged by build.rs for dev runs and bundling
-src-tauri/runtime/
+backend/runtime/
 lcov.info
 .token-optimizer/

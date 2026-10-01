@@ -7,7 +7,7 @@ updates:
     open-pull-requests-limit: 5
 
   - package-ecosystem: cargo
-    directory: /src-tauri
+    directory: /backend
     schedule:
       interval: daily
     open-pull-requests-limit: 5

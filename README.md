@@ -28,8 +28,8 @@ When limiting is expected to exceed 1 dB, the engine calibrates gain in a decode
 ## Architecture
 
 - **Desktop UI:** Tauri 2, TypeScript, and Vite (`src/`)
-- **Audio engine:** Rust (`src-tauri/src/engine/`)
-- **Media bridge:** C bindings to libavformat, libavcodec, and libswresample (`src-tauri/native/avbridge.c`)
+- **Audio engine:** Rust (`backend/src/engine/`)
+- **Media bridge:** C bindings to libavformat, libavcodec, and libswresample (`backend/native/avbridge.c`)
 
 The application does not start an `ffmpeg` process. FFmpeg libraries are linked directly through the native bridge.
 
@@ -79,14 +79,14 @@ The end-to-end test modifies files in place. Always use disposable copies:
 
 ```powershell
 $env:NORMALIZER_E2E_FILES = "C:/tmp/video-a.mp4;C:/tmp/video-b.mkv"
-cargo test --manifest-path src-tauri/Cargo.toml e2e -- --ignored --nocapture
+cargo test --manifest-path backend/Cargo.toml e2e -- --ignored --nocapture
 ```
 
 ## Project layout
 
 ```text
 src/                     TypeScript UI and styles
-src-tauri/
+backend/
   native/avbridge.{h,c}  FFmpeg bridge: probe, decode, remux, and encode
   src/engine/
     analyze.rs           EBU R128 measurement and assessment

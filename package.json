@@ -8,10 +8,10 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
-    "tauri": "tauri",
-    "app:dev": "tauri dev",
-    "app:build": "tauri build",
-    "test:core": "cargo test --manifest-path src-tauri/Cargo.toml"
+    "tauri": "tauri --config backend/tauri.conf.json",
+    "app:dev": "tauri dev --config backend/tauri.conf.json",
+    "app:build": "tauri build --config backend/tauri.conf.json",
+    "test:core": "cargo test --manifest-path backend/Cargo.toml"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.0",

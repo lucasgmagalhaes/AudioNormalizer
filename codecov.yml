@@ -10,5 +10,5 @@ coverage:
         threshold: 1%
 
 ignore:
-  - "src-tauri/native/"
-  - "src-tauri/build.rs"
+  - "backend/native/"
+  - "backend/build.rs"
