@@ -1,6 +1,6 @@
 # Audio Normalizer
 
-![Audio Normalizer logo](logo.svg)
+<img src="logo.svg" alt="Audio Normalizer logo" width="200" />
 
 Audio Normalizer is a desktop application that brings videos to a consistent loudness target using EBU R128 / ITU-R BS.1770 measurement. It is built for creators who want predictable playback volume across platforms without re-encoding their video.
 
