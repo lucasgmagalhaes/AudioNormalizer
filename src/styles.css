@@ -139,6 +139,7 @@ svg {
 .drop:hover,
 .drop:focus-visible {
   border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 .drop.dragging {
@@ -268,7 +269,8 @@ select:focus-visible {
   font: inherit;
   font-weight: 600;
   cursor: pointer;
-  transition: background 0.15s, border-color 0.15s, opacity 0.15s;
+  min-height: 44px;
+  transition: transform 0.15s ease-out, background-color 0.15s ease-out, border-color 0.15s ease-out, opacity 0.15s ease-out;
 }
 
 .btn svg {
@@ -294,6 +296,10 @@ select:focus-visible {
 
 .btn-primary:not(:disabled):hover {
   background: var(--accent-strong);
+}
+
+.btn:not(:disabled):active {
+  transform: scale(0.98);
 }
 
 .btn-secondary {
@@ -591,10 +597,43 @@ select:focus-visible {
   font-size: 12px;
 }
 
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
 @media (max-width: 640px) {
   .settings,
   .metrics,
   .result .metrics {
     grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 440px) {
+  .app {
+    padding: 20px 16px 28px;
+  }
+
+  .brand {
+    align-items: flex-start;
+  }
+
+  .settings,
+  .metrics,
+  .result .metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .verdict {
+    flex-direction: column;
+  }
+
+  .potential {
+    text-align: left;
   }
 }

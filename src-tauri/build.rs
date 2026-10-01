@@ -21,7 +21,8 @@ fn main() {
     }));
     let include = ffmpeg_dir.join("include");
     let lib = ffmpeg_dir.join("lib");
-    for dir in [&include, &lib] {
+    let bin = ffmpeg_dir.join("bin");
+    for dir in [&include, &lib, &bin] {
         assert!(dir.is_dir(), "FFMPEG_DIR sem a pasta {}", dir.display());
     }
 
@@ -38,18 +39,16 @@ fn main() {
         println!("cargo:rustc-link-lib=dylib={name}");
     }
 
-    stage_runtime_libraries(&ffmpeg_dir);
+    stage_runtime_libraries(&ffmpeg_dir)
+        .expect("falha ao copiar as bibliotecas de runtime do FFmpeg");
     tauri_build::build();
 }
 
 /// Windows resolves DLLs from the executable's folder, so copy them there for
 /// `tauri dev`, and into `runtime/` which tauri.conf.json bundles.
-fn stage_runtime_libraries(ffmpeg_dir: &Path) {
+fn stage_runtime_libraries(ffmpeg_dir: &Path) -> std::io::Result<()> {
     let bin = ffmpeg_dir.join("bin");
-    let Ok(entries) = fs::read_dir(&bin) else {
-        return;
-    };
-    let libraries: Vec<PathBuf> = entries
+    let libraries: Vec<PathBuf> = fs::read_dir(&bin)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
             let ext = p.extension().and_then(|e| e.to_str()).unwrap_or_default();
@@ -63,7 +62,7 @@ fn stage_runtime_libraries(ffmpeg_dir: &Path) {
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let exe_dir = out_dir.ancestors().nth(3).map(Path::to_path_buf);
 
-    let _ = fs::create_dir_all(&runtime_dir);
+    fs::create_dir_all(&runtime_dir)?;
     for library in &libraries {
         let name = library.file_name().unwrap();
         for dir in std::iter::once(&runtime_dir).chain(exe_dir.as_ref()) {
@@ -72,8 +71,9 @@ fn stage_runtime_libraries(ffmpeg_dir: &Path) {
                 .map(|m| m.len() != fs::metadata(library).map(|s| s.len()).unwrap_or(0))
                 .unwrap_or(true);
             if stale {
-                let _ = fs::copy(library, &dest);
+                fs::copy(library, &dest)?;
             }
         }
     }
+    Ok(())
 }

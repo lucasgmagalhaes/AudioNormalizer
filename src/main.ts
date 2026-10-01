@@ -1,5 +1,5 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   errorMessage,
@@ -134,6 +134,7 @@ function setProgress(stage: Stage, percent: number) {
   ui.progressPercent.textContent = `${Math.floor(p)}%`;
   ui.progressFill.style.width = `${p}%`;
   ui.progressBar.setAttribute("aria-valuenow", String(Math.floor(p)));
+  ui.progressBar.setAttribute("aria-valuetext", `${STAGE_LABELS[stage]} ${Math.floor(p)}%`);
 }
 
 function showError(message: string | null) {
@@ -277,6 +278,11 @@ async function runAnalysis() {
 async function runNormalize() {
   if (!state.file || state.busy) return;
   const file = state.file;
+  const approved = await confirm(
+    `“${file.name}” será substituído pelo vídeo normalizado. Essa ação não pode ser desfeita.`,
+    { title: "Substituir vídeo original?", kind: "warning", okLabel: "Normalizar e substituir", cancelLabel: "Cancelar" },
+  );
+  if (!approved || state.busy || state.file?.path !== file.path) return;
   const measured =
     state.analysis && state.analyzedPath === file.path ? state.analysis.measurement : null;
 
