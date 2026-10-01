@@ -42,3 +42,22 @@ pub(crate) fn db_to_linear(db: f64) -> f64 {
 pub(crate) fn linear_to_db(linear: f64) -> f64 {
     20.0 * linear.max(1e-10).log10()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_target_ranges() {
+        assert!(Targets { target_lufs: -16.0, true_peak_db: -1.0 }.validate().is_ok());
+        assert!(Targets { target_lufs: -41.0, true_peak_db: -1.0 }.validate().is_err());
+        assert!(Targets { target_lufs: -16.0, true_peak_db: 0.1 }.validate().is_err());
+    }
+
+    #[test]
+    fn converts_decibels_round_trip() {
+        for db in [-60.0, -16.0, 0.0] {
+            assert!((linear_to_db(db_to_linear(db)) - db).abs() < 1e-9);
+        }
+    }
+}

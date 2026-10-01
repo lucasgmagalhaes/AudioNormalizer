@@ -100,3 +100,32 @@ impl Progress<'_> {
 fn round(p: f64) -> f64 {
     (p * 10.0).round() / 10.0
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[test]
+    fn reports_progress_and_honors_cancellation() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let job = Job::new(Arc::clone(&cancel), move |event| captured.lock().unwrap().push(event));
+
+        let mut progress = job.stage("analyze", 10.0, 50.0);
+        progress.update(-1.0);
+        progress.update(1.0);
+        assert_eq!(events.lock().unwrap().iter().map(|e| e.percent).collect::<Vec<_>>(), [10.0, 60.0]);
+
+        cancel.store(true, Ordering::Relaxed);
+        assert_eq!(job.check_cancelled().unwrap_err().to_string(), "processamento cancelado");
+    }
+
+    #[test]
+    fn marker_errors_describe_their_failure() {
+        assert_eq!(Cancelled.to_string(), "processamento cancelado");
+        assert_eq!(StageStopped.to_string(), "etapa de processamento interrompida");
+        assert_eq!(round(12.34), 12.3);
+    }
+}
