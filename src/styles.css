@@ -108,11 +108,7 @@ svg {
 .brand-mark {
   width: 40px;
   height: 40px;
-  padding: 8px;
-  border-radius: 12px;
-  background: var(--accent);
-  color: #fff;
-  stroke-width: 2.4;
+  flex: none;
 }
 
 .brand h1 {

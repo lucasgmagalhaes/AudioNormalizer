@@ -1,62 +1,93 @@
 # Audio Normalizer
 
-Aplicativo desktop (Tauri 2) que normaliza o volume de vídeos para um alvo de loudness (EBU R128 / ITU-R BS.1770), substituindo o próprio arquivo.
+![Audio Normalizer logo](logo.svg)
 
-- **Front-end:** TypeScript + Vite (`src/`)
-- **Processamento:** Rust (`src-tauri/src/engine/`): medição de loudness, ganho, limitador de true peak
-- **Mídia:** bridge em C (`src-tauri/native/avbridge.c`) sobre libavformat/libavcodec/libswresample. Nenhum processo `ffmpeg` é executado.
+Audio Normalizer is a desktop application that brings videos to a consistent loudness target using EBU R128 / ITU-R BS.1770 measurement. It is built for creators who want predictable playback volume across platforms without re-encoding their video.
 
-## Como funciona
+## What it does
 
-1. **Pré-análise** (`Analisar`): decodifica a 1ª faixa de áudio e mede loudness integrado, LRA, true peak e sample peak. Mostra o ganho necessário, o quanto o limitador vai atuar e um "potencial de melhoria". Trocar o alvo reavalia sem decodificar de novo. Os pacotes de áudio comprimidos ficam em memória (até 512 MiB) para a normalização não reler o vídeo.
-2. **Normalização** (`Normalizar`):
-   - aplica o ganho e um limitador *look-ahead* com detecção de true peak (oversampling 4x);
-   - se a limitação prevista passar de 1 dB, calibra numa passada só (sem encode): cinco ganhos candidatos em paralelo e interpolação do que bate o alvo;
-   - recodifica só a faixa de áudio normalizada, com o mesmo codec (AAC, Opus, MP3, Vorbis, AC-3, E-AC-3, FLAC, ALAC, PCM). Vídeo, legendas, anexos, capítulos, metadados e as outras faixas de áudio são copiados sem recompressão;
-   - mede o resultado real decodificando os pacotes recém-codificados, sem reler o arquivo. Se o encoder AAC estourar o teto de pico, recodifica uma vez com `aac_coder=fast`;
-   - confere duração e vídeo e então **substitui o original** (rename atômico no mesmo volume). Em erro ou cancelamento o original fica intacto e o temporário é apagado.
+- Analyzes the first audio track for integrated loudness, loudness range, true peak, and sample peak.
+- Applies gain and a look-ahead true-peak limiter with 4x oversampling.
+- Re-encodes only the normalized audio track. Video, subtitles, attachments, chapters, metadata, and other audio tracks are stream-copied.
+- Verifies the generated file before atomically replacing the original. On failure or cancellation, the original file is preserved.
+- Supports targets from -14 to -24 LUFS and true-peak ceilings of -1, -1.5, or -2 dBTP.
 
-### Desempenho
+## How it works
 
-Cada etapa pesada roda em pipeline com threads e filas limitadas: decode → ganho/limitador → encoder/muxer → medição do áudio codificado. Na análise, loudness e true peak (por canal) são medidos em paralelo. O arquivo de vídeo é lido uma vez na análise e uma vez na gravação. O limite prático é o encoder AAC nativo (~35 s para 30 min de áudio estéreo).
+1. **Analyze** decodes the first audio track and shows the required gain, expected limiter reduction, and potential improvement. Compressed audio packets are cached in memory, up to 512 MiB, so normalization can avoid reading the video again.
+2. **Normalize** applies gain and limiting, then encodes and muxes the replacement audio track in a bounded threaded pipeline.
+3. **Verify** measures the encoded audio and checks duration and video presence before replacing the source file.
 
-Alvos disponíveis: -14 (YouTube/Spotify/Instagram/TikTok), -16, -19, -23 (EBU R128), -24 LUFS (ATSC A/85). Teto: -1, -1,5 ou -2 dBTP. O ganho é limitado a ±24 dB.
+When limiting is expected to exceed 1 dB, the engine calibrates gain in a decode-only pass. If the native AAC encoder exceeds the peak ceiling, it retries once with `aac_coder=fast`.
 
-## Requisitos
+## Architecture
 
-- Node 20+, Rust stable (MSVC no Windows), Visual Studio Build Tools (compilador C)
-- **FFmpeg em versão "shared" com arquivos de desenvolvimento** (`include/`, `lib/`, `bin/`), ex.: `winget install BtbN.FFmpeg.LGPL.Shared.8.1`
-- Variável `FFMPEG_DIR` apontando para essa pasta
+- **Desktop UI:** Tauri 2, TypeScript, and Vite (`src/`)
+- **Audio engine:** Rust (`src-tauri/src/engine/`)
+- **Media bridge:** C bindings to libavformat, libavcodec, and libswresample (`src-tauri/native/avbridge.c`)
 
-O `build.rs` compila a bridge, faz o link com as libs e copia as DLLs do FFmpeg para a pasta do executável (dev) e para `src-tauri/runtime/` (empacotadas no instalador).
+The application does not start an `ffmpeg` process. FFmpeg libraries are linked directly through the native bridge.
 
-## Comandos
+## Requirements
+
+- Node.js 20+
+- Stable Rust with the MSVC toolchain on Windows
+- Visual Studio Build Tools with a C compiler
+- A shared FFmpeg development build containing `include/`, `lib/`, and `bin/`
+
+Install the shared FFmpeg package on Windows:
+
+```powershell
+winget install BtbN.FFmpeg.LGPL.Shared.8.1
+```
+
+Set `FFMPEG_DIR` to the installed shared-build directory:
+
+```powershell
+$env:FFMPEG_DIR = "C:\path\to\ffmpeg-shared"
+```
+
+`build.rs` compiles the bridge, links FFmpeg, and stages the runtime DLLs for development and packaging.
+
+## Development
 
 ```bash
 npm install
-npm run app:dev      # abre o app em modo desenvolvimento
-npm run app:build    # gera o instalador em src-tauri/target/release/bundle
-npm run test:core    # testes unitários do engine (limitador, avaliação)
+npm run app:dev
 ```
 
-Teste ponta a ponta com arquivos reais (**os arquivos são modificados**, use cópias):
+Build an installer:
 
 ```bash
-NORMALIZER_E2E_FILES="C:/tmp/a.mp4;C:/tmp/b.mkv" cargo test --manifest-path src-tauri/Cargo.toml e2e -- --ignored --nocapture
+npm run app:build
 ```
 
-## Estrutura
+Run the engine tests:
 
+```bash
+npm run test:core
 ```
-src/                     UI (index.html, main.ts, api.ts, styles.css)
+
+## End-to-end testing
+
+The end-to-end test modifies files in place. Always use disposable copies:
+
+```powershell
+$env:NORMALIZER_E2E_FILES = "C:/tmp/video-a.mp4;C:/tmp/video-b.mkv"
+cargo test --manifest-path src-tauri/Cargo.toml e2e -- --ignored --nocapture
+```
+
+## Project layout
+
+```text
+src/                     TypeScript UI and styles
 src-tauri/
-  native/avbridge.{h,c}  bridge C: probe, decoder PCM, remuxer/encoder
+  native/avbridge.{h,c}  FFmpeg bridge: probe, decode, remux, and encode
   src/engine/
-    av.rs                wrappers seguros da bridge (FFI)
-    analyze.rs           medição EBU R128 + avaliação da melhoria
-    limiter.rs           limitador true peak com look-ahead
-    normalize.rs         pipeline de normalização e substituição do arquivo
-    job.rs               progresso, cancelamento e utilidades de pipeline
-    bench.rs             benchmarks (ignorados; usam BENCH_FILE)
-  src/lib.rs             comandos Tauri
+    analyze.rs           EBU R128 measurement and assessment
+    limiter.rs           Look-ahead true-peak limiter
+    normalize.rs         Normalization pipeline and atomic replacement
+    job.rs               Progress reporting and cancellation
+    bench.rs             Ignored real-media benchmarks using BENCH_FILE
+  src/lib.rs             Tauri commands
 ```

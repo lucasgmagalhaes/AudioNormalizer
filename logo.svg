@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-labelledby="title">
+  <title id="title">Audio Normalizer</title>
+  <defs>
+    <linearGradient id="background" x1="156" y1="112" x2="868" y2="912" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#7678FF"/>
+      <stop offset="1" stop-color="#4242D7"/>
+    </linearGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="18" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect x="64" y="64" width="896" height="896" rx="224" fill="url(#background)"/>
+  <path d="M256 512h78l54-172 96 344 104-464 102 432 48-140h86" fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" stroke-width="54"/>
+  <circle cx="512" cy="512" r="48" fill="#fff" filter="url(#glow)"/>
+  <path d="M256 764h512" stroke="#FFFFFF" stroke-linecap="round" stroke-opacity=".32" stroke-width="24"/>
+</svg>
