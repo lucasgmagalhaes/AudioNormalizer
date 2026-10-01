@@ -1,5 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { applyLanguage, currentLanguage, type Language } from "./i18n";
 import {
   api,
   errorMessage,
@@ -56,6 +57,7 @@ const ui = {
   fileDetail: $("file-detail"),
   target: $<HTMLSelectElement>("target"),
   ceiling: $<HTMLSelectElement>("ceiling"),
+  language: $<HTMLSelectElement>("language"),
   analyze: $<HTMLButtonElement>("analyze"),
   normalize: $<HTMLButtonElement>("normalize"),
   cancel: $<HTMLButtonElement>("cancel"),
@@ -334,6 +336,7 @@ ui.cancel.addEventListener("click", () => {
 });
 ui.target.addEventListener("change", () => void reassess());
 ui.ceiling.addEventListener("change", () => void reassess());
+ui.language.addEventListener("change", () => applyLanguage(ui.language.value as Language));
 
 void api.onProgress((event) => {
   if (state.busy) setProgress(event.stage, event.percent);
@@ -353,4 +356,6 @@ void getCurrentWebview().onDragDropEvent((event) => {
   }
 });
 
+ui.language.value = currentLanguage();
+applyLanguage(currentLanguage());
 render();

@@ -13,18 +13,19 @@
           <img class="brand-mark" src="/logo.svg" alt="" />
           <div>
             <h1>Audio Normalizer</h1>
-            <p>Deixa o volume dos seus vídeos no nível certo (EBU R128).</p>
+            <p data-i18n="tagline">Deixa o volume dos seus vídeos no nível certo (EBU R128).</p>
           </div>
+          <label class="language"><span data-i18n="language">Idioma</span><select id="language"><option value="pt-BR">Português</option><option value="en">English</option><option value="es">Español</option></select></label>
         </div>
       </header>
 
-      <section id="drop" class="drop" tabindex="0" role="button" aria-label="Selecionar vídeo">
+      <section id="drop" class="drop" tabindex="0" role="button" data-i18n-aria-label="selectVideo" aria-label="Selecionar vídeo">
         <div class="drop-empty">
           <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 16V4m0 0-4.5 4.5M12 4l4.5 4.5M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" />
           </svg>
-          <p class="drop-title">Arraste um vídeo para cá</p>
-          <p class="drop-sub">ou <span class="link">clique para selecionar</span> — MP4, MKV, MOV, WEBM, AVI…</p>
+          <p class="drop-title" data-i18n="dropTitle">Arraste um vídeo para cá</p>
+          <p class="drop-sub" data-i18n="dropSub">ou clique para selecionar — MP4, MKV, MOV, WEBM, AVI…</p>
         </div>
         <div class="drop-file" hidden>
           <svg class="file-icon" viewBox="0 0 24 24" aria-hidden="true">
@@ -35,13 +36,13 @@
             <p id="file-name" class="file-name"></p>
             <p id="file-detail" class="file-detail"></p>
           </div>
-          <span class="file-change link">Trocar</span>
+          <span class="file-change link" data-i18n="change">Trocar</span>
         </div>
       </section>
 
-      <section class="settings" aria-label="Configurações">
+      <section class="settings" data-i18n-aria-label="settings" aria-label="Configurações">
         <label class="field">
-          <span>Alvo de loudness</span>
+          <span data-i18n="target">Alvo de loudness</span>
           <select id="target">
             <option value="-14" selected>-14 LUFS · YouTube, Spotify, Instagram, TikTok</option>
             <option value="-16">-16 LUFS · Apple Music, podcasts</option>
@@ -51,7 +52,7 @@
           </select>
         </label>
         <label class="field">
-          <span>Teto de pico</span>
+          <span data-i18n="ceiling">Teto de pico</span>
           <select id="ceiling">
             <option value="-1" selected>-1,0 dBTP · recomendado</option>
             <option value="-1.5">-1,5 dBTP</option>
@@ -63,13 +64,13 @@
       <div class="actions">
         <button id="analyze" class="btn btn-secondary" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6" /><path d="m20 20-4.2-4.2" /></svg>
-          Analisar
+          <span data-i18n="analyze">Analisar</span>
         </button>
         <button id="normalize" class="btn btn-primary" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l3-7 4 14 3-7h5" /></svg>
-          Normalizar
+          <span data-i18n="normalize">Normalizar</span>
         </button>
-        <button id="cancel" class="btn btn-ghost" hidden>Cancelar</button>
+        <button id="cancel" class="btn btn-ghost" hidden data-i18n="cancel">Cancelar</button>
       </div>
 
       <section id="progress" class="card progress" hidden aria-live="polite">

@@ -120,6 +120,18 @@ svg {
   color: var(--muted);
 }
 
+.language {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.language select { width: auto; padding: 6px 26px 6px 8px; }
+
 /* drop zone */
 .drop {
   border: 2px dashed var(--border);
