@@ -1,5 +1,8 @@
 # Audio Normalizer
 
+[![CI](https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml/badge.svg)](https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer/graph/badge.svg)](https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer)
+
 <p align="center">
   <img src="logo.svg" alt="Audio Normalizer logo" width="150" />
 </p>

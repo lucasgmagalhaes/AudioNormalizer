@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-test-and-coverage:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+
+      - name: Install FFmpeg development libraries
+        shell: pwsh
+        run: |
+          winget install --exact --id BtbN.FFmpeg.LGPL.Shared.8.1 --accept-package-agreements --accept-source-agreements
+          $package = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Directory -Filter "BtbN.FFmpeg.LGPL.Shared.8.1_*" |
+            Get-ChildItem -Directory |
+            Select-Object -First 1
+          if (-not $package -or -not (Test-Path "$($package.FullName)\include") -or -not (Test-Path "$($package.FullName)\lib") -or -not (Test-Path "$($package.FullName)\bin")) {
+            throw "The FFmpeg shared development build was not found."
+          }
+          "FFMPEG_DIR=$($package.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build frontend
+        run: npm run build
+
+      - name: Run Rust tests with coverage
+        run: cargo llvm-cov --manifest-path src-tauri/Cargo.toml --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          use_oidc: true
+          files: lcov.info
+          flags: rust
+          fail_ci_if_error: true

@@ -4,4 +4,5 @@ src-tauri/target/
 src-tauri/gen/
 # FFmpeg DLLs staged by build.rs for dev runs and bundling
 src-tauri/runtime/
+lcov.info
 .token-optimizer/
