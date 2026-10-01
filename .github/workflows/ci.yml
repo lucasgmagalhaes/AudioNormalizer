@@ -91,7 +91,7 @@ jobs:
         run: cargo llvm-cov --manifest-path src-tauri/Cargo.toml --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           use_oidc: true
           files: lcov.info
