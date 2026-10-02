@@ -292,6 +292,7 @@ mod tests {
         let measurement = Measurement {
             max_short_term_lufs: None,
             max_momentary_lufs: None,
+            stereo_correlation: None,
             integrated_lufs: -20.0,
             loudness_range: 4.0,
             true_peak_db: -3.0,

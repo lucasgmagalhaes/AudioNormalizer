@@ -104,3 +104,11 @@ test("the confirmation dialog markup matches the ids main.ts uses", () => {
     assert.match(main, new RegExp(`byId(?:<[A-Za-z]+>)?\\("${id}"\\)`), `main.ts does not read #${id}`);
   }
 });
+
+test("the optional audio clean-up is off by default and reaches the engine for single files and the queue", () => {
+  for (const id of ["highpass", "declip"]) {
+    assert.match(html, new RegExp(`<input id="${id}" type="checkbox"(?![^>]*checked)`), `${id} must start unchecked`);
+  }
+  assert.equal(main.match(/cleanup: cleanupOptions\(\)/g)?.length, 2, "both normalize paths must send it");
+  assert.match(main, /highpass: ui\.highpass\.checked, declip: ui\.declip\.checked/);
+});

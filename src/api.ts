@@ -31,6 +31,8 @@ export interface Measurement {
   samplePeakDb: number;
   maxShortTermLufs?: number;
   maxMomentaryLufs?: number;
+  /** Left/right correlation of a stereo track: -1 opposite phase, 1 identical. */
+  stereoCorrelation?: number;
 }
 
 export interface MediaSummary {
@@ -66,12 +68,19 @@ export interface AnalysisReport {
 
 export type OutputMode = "replace" | "copy";
 
+/** Optional audio clean-up. The video and the duration are never touched. */
+export interface CleanupOptions {
+  highpass: boolean;
+  declip: boolean;
+}
+
 export interface NormalizeOptions {
   output: OutputMode;
   track: number;
   allTracks: boolean;
   leveling: boolean;
   lossless: boolean;
+  cleanup: CleanupOptions;
 }
 
 export interface NormalizeReport {
@@ -80,6 +89,8 @@ export interface NormalizeReport {
   replaced: boolean;
   tracksProcessed: number;
   leveled: boolean;
+  cleanup: CleanupOptions;
+  declippedSamples?: number;
   inputLufs: number;
   inputTruePeakDb: number;
   inputLoudnessRange: number;

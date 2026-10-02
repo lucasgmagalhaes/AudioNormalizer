@@ -13,6 +13,7 @@ use std::time::Instant;
 
 use super::analyze::{self, Measurement, CACHE_LIMIT_BYTES, MAX_GAIN_DB};
 use super::av::{self, AudioCache, AudioSource, MediaInfo, PcmDecoder, Remuxer};
+use super::cleanup::{Cleanup, CleanupSettings};
 use super::job::{Cancelled, Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::leveler::Leveler;
 use super::limiter::Limiter;
@@ -59,6 +60,8 @@ pub struct Options {
     /// Save the audio as FLAC (no second lossy generation) when the
     /// container accepts it.
     pub lossless: bool,
+    /// Optional audio clean-up; the video and the duration are never touched.
+    pub cleanup: CleanupSettings,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +75,10 @@ pub struct NormalizeReport {
     pub tracks_processed: usize,
     /// The dynamics were leveled before the final gain.
     pub leveled: bool,
+    /// Clean-up stages that ran, and how many clipped samples were rebuilt.
+    pub cleanup: CleanupSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub declipped_samples: Option<u64>,
     pub input_lufs: f64,
     pub input_true_peak_db: f64,
     pub input_loudness_range: f64,
@@ -141,7 +148,7 @@ pub fn run(
         let (measured, cache) = if track == options.track { reuse.take().unwrap_or((None, None)) } else { (None, None) };
         let window = job.window(pass as f64 / passes, 1.0 / passes);
         let current: &Path = finished.last().map_or(input, |previous| previous.temp.0.as_path());
-        let done = normalize_track(targets, track, input, current, pass, measured, cache, options.leveling, options.lossless, &window)?;
+        let done = normalize_track(targets, track, input, current, pass, measured, cache, options.leveling, options.lossless, options.cleanup, &window)?;
         finished.push(done);
     }
 
@@ -154,6 +161,7 @@ pub fn run(
     let (measurement, gain_db) = (done.measurement, done.gain_db);
     let (output_lufs, output_true_peak_db) = (done.encoded.output_lufs, done.encoded.true_peak_db);
     let limiter_max_reduction_db = done.encoded.limiter_reduction_db;
+    let declipped_samples = done.encoded.declipped_samples;
     let (input_media, output_media) = (media_details(&done.info), media_details(&done.encoded.media));
 
     // Only the last pass output survives; earlier ones are deleted on drop.
@@ -166,6 +174,8 @@ pub fn run(
         replaced: options.output == OutputMode::Replace,
         tracks_processed,
         leveled: options.leveling,
+        cleanup: options.cleanup,
+        declipped_samples,
         input_lufs: measurement.integrated_lufs,
         input_true_peak_db: measurement.true_peak_db,
         input_loudness_range: measurement.loudness_range,
@@ -208,6 +218,7 @@ fn normalize_track(
     mut cache: Option<Arc<AudioCache>>,
     leveling: bool,
     lossless: bool,
+    cleanup: CleanupSettings,
     job: &Job,
 ) -> Result<TrackPass> {
     let info = av::probe_track(source_file, track)?;
@@ -235,14 +246,15 @@ fn normalize_track(
     let predicted_limiting = measurement.true_peak_db + gain_db - ceiling_db;
     // The rider moves the loudness, so leveling always needs the dry run.
     let leveler_reference = leveling.then_some(measurement.integrated_lufs);
-    if leveling || (predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB) {
+    // Rebuilt peaks also move the loudness and the peak, so declipping calibrates too.
+    if leveling || cleanup.declip || (predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB) {
         let mut progress = job.stage("calibrate", cursor, 15.0);
         cursor += 15.0;
-        let plan = Calibration { base_gain_db: gain_db, ceiling_db, target_lufs: targets.target_lufs, leveler_reference };
+        let plan = Calibration { base_gain_db: gain_db, ceiling_db, target_lufs: targets.target_lufs, leveler_reference, cleanup };
         gain_db = calibrate(&source, &info, plan, job, &mut progress)?;
     }
 
-    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, lossless, encoder_options: "" };
+    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, lossless, cleanup, encoder_options: "" };
     let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
     let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
@@ -270,6 +282,7 @@ struct EncodeSettings<'a> {
     leveler_reference: Option<f64>,
     /// Prefer FLAC over the source codec.
     lossless: bool,
+    cleanup: CleanupSettings,
     encoder_options: &'a str,
 }
 
@@ -279,6 +292,7 @@ struct Encoded {
     output_lufs: f64,
     true_peak_db: f64,
     limiter_reduction_db: f64,
+    declipped_samples: Option<u64>,
     media: MediaInfo,
 }
 
@@ -304,7 +318,7 @@ fn encode(
     let encoder = remuxer.encoder();
     let monitor = remuxer.monitor_format();
     let decoder = source.open(info)?;
-    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db, settings.leveler_reference)?;
+    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db, settings.leveler_reference, settings.cleanup)?;
     let mut progress = job.stage(stage, start, end - start);
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
@@ -411,6 +425,7 @@ fn encode(
         output_lufs: actual.integrated_lufs,
         true_peak_db: actual.true_peak_db,
         limiter_reduction_db: rendered.limiter_reduction_db,
+        declipped_samples: rendered.declipped_samples,
         media: written,
     })
 }
@@ -418,10 +433,14 @@ fn encode(
 struct Rendered {
     output_lufs: f64,
     limiter_reduction_db: f64,
+    declipped_samples: Option<u64>,
 }
 
-/// [Leveler] -> gain -> true-peak limiter -> integrated-loudness meter.
+/// [Cleanup] -> [Leveler] -> gain -> true-peak limiter -> integrated-loudness meter.
 struct Chain {
+    cleanup: Option<Cleanup>,
+    /// Cleaned audio of the block being processed.
+    scratch: Vec<f32>,
     leveler: Option<Leveler>,
     gain: f32,
     limiter: Limiter,
@@ -429,10 +448,18 @@ struct Chain {
 }
 
 impl Chain {
-    fn new(info: &MediaInfo, gain_db: f64, ceiling_db: f64, leveler_reference: Option<f64>) -> Result<Self> {
+    fn new(
+        info: &MediaInfo,
+        gain_db: f64,
+        ceiling_db: f64,
+        leveler_reference: Option<f64>,
+        cleanup: CleanupSettings,
+    ) -> Result<Self> {
         let channels = info.audio.channels;
         let sample_rate = info.audio.sample_rate;
         Ok(Self {
+            cleanup: cleanup.any().then(|| Cleanup::new(cleanup, channels as usize, sample_rate)),
+            scratch: Vec::new(),
             leveler: leveler_reference.map(|lufs| Leveler::new(channels as usize, sample_rate, lufs)),
             gain: db_to_linear(gain_db) as f32,
             limiter: Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32),
@@ -441,8 +468,24 @@ impl Chain {
         })
     }
 
-    /// Applies the gain to `block` in place and writes the limited audio to `out`.
+    /// Cleans, levels and applies the gain to `block` and writes the limited
+    /// audio to `out`. `block` is used as scratch space.
     fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
+        match self.cleanup.as_mut() {
+            Some(cleanup) => {
+                let mut cleaned = std::mem::take(&mut self.scratch);
+                cleaned.clear();
+                cleanup.process(block, &mut cleaned);
+                let done = self.shape(&mut cleaned, out);
+                self.scratch = cleaned;
+                done
+            }
+            None => self.shape(block, out),
+        }
+    }
+
+    /// Leveler, gain and limiter over already cleaned audio.
+    fn shape(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
         if let Some(leveler) = self.leveler.as_mut() {
             leveler.process(block);
         }
@@ -453,16 +496,25 @@ impl Chain {
         self.meter.add_frames_f32(out).context("falha ao medir loudness")
     }
 
-    /// Drains the limiter's look-ahead into `out`.
+    /// Drains the clean-up and limiter look-ahead into `out`.
     fn flush(&mut self, out: &mut Vec<f32>) -> Result<()> {
-        self.limiter.flush(out);
-        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+        let mut tail = Vec::new();
+        if let Some(cleanup) = self.cleanup.as_mut() {
+            let mut held = Vec::new();
+            cleanup.flush(&mut held);
+            self.shape(&mut held, &mut tail)?;
+        }
+        self.limiter.flush(&mut tail);
+        self.meter.add_frames_f32(&tail).context("falha ao medir loudness")?;
+        out.append(&mut tail);
+        Ok(())
     }
 
     fn result(&self) -> Result<Rendered> {
         Ok(Rendered {
             output_lufs: self.meter.loudness_global().context("falha ao calcular loudness")?,
             limiter_reduction_db: -linear_to_db(self.limiter.min_gain),
+            declipped_samples: self.cleanup.as_ref().and_then(Cleanup::declipped_samples),
         })
     }
 }
@@ -474,6 +526,7 @@ struct Calibration {
     ceiling_db: f64,
     target_lufs: f64,
     leveler_reference: Option<f64>,
+    cleanup: CleanupSettings,
 }
 
 /// Dry run that finds the gain which, after limiting, lands on `target`.
@@ -486,7 +539,7 @@ fn calibrate(
     job: &Job,
     progress: &mut Progress,
 ) -> Result<f64> {
-    let Calibration { base_gain_db, ceiling_db, target_lufs, leveler_reference } = plan;
+    let Calibration { base_gain_db, ceiling_db, target_lufs, leveler_reference, cleanup } = plan;
     let steps: &[f64] = if leveler_reference.is_some() { &LEVELING_CALIBRATION_STEPS_DB } else { &CALIBRATION_STEPS_DB };
     let mut gains: Vec<f64> = steps
         .iter()
@@ -495,7 +548,7 @@ fn calibrate(
     gains.dedup();
     let chains = gains
         .iter()
-        .map(|&gain| Chain::new(info, gain, ceiling_db, leveler_reference))
+        .map(|&gain| Chain::new(info, gain, ceiling_db, leveler_reference, cleanup))
         .collect::<Result<Vec<_>>>()?;
     let mut decoder = source.open(info)?;
     let channels = info.audio.channels as usize;
@@ -657,387 +710,4 @@ impl Drop for TempFile {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    #[test]
-    fn interpolates_calibration_gain() {
-        let gains = [6.0, 7.5, 9.0];
-        let loudness = [-16.0, -15.0, -13.5];
-        assert_eq!(interpolate_gain(&gains, &loudness, -16.5), 6.0);
-        assert!((interpolate_gain(&gains, &loudness, -15.5) - 6.75).abs() < 1e-9);
-        assert!((interpolate_gain(&gains, &loudness, -14.0) - 8.5).abs() < 1e-9);
-        assert_eq!(interpolate_gain(&gains, &loudness, -12.0), 9.0);
-    }
-
-    fn write_test_wav(path: &Path) {
-        let rate = 48_000u32;
-        let frames = rate * 2;
-        let samples: Vec<i16> = (0..frames)
-            .map(|i| ((i as f32 * std::f32::consts::TAU * 1_000.0 / rate as f32).sin() * 3_276.0) as i16)
-            .collect();
-        let data_len = (samples.len() * 2) as u32;
-        let mut wav = Vec::with_capacity(44 + data_len as usize);
-        wav.extend_from_slice(b"RIFF");
-        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
-        wav.extend_from_slice(b"WAVEfmt ");
-        wav.extend_from_slice(&16u32.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&1u16.to_le_bytes());
-        wav.extend_from_slice(&rate.to_le_bytes());
-        wav.extend_from_slice(&(rate * 2).to_le_bytes());
-        wav.extend_from_slice(&2u16.to_le_bytes());
-        wav.extend_from_slice(&16u16.to_le_bytes());
-        wav.extend_from_slice(b"data");
-        wav.extend_from_slice(&data_len.to_le_bytes());
-        for sample in samples { wav.extend_from_slice(&sample.to_le_bytes()); }
-        fs::write(path, wav).unwrap();
-    }
-
-    /// Re-encodes `from` into `to` through our own bridge; the container is
-    /// chosen by the extension of `to` and the codec follows the source.
-    fn remux_audio(from: &Path, to: &Path) {
-        let info = av::probe(from).unwrap();
-        let mut decoder = PcmDecoder::open(from, &info, 0).unwrap();
-        let mut remuxer = Remuxer::open(from, to, &info, "", false).unwrap();
-        let mut block = Vec::new();
-        while decoder.read(&mut block).unwrap() {
-            remuxer.write(&block).unwrap();
-        }
-        remuxer.finish().unwrap();
-        // Windows will not delete a file that is still open.
-        drop(remuxer);
-        drop(decoder);
-    }
-
-    /// Encodes a tone to AAC through our own bridge (WAV in, .m4a out), so
-    /// no ffmpeg executable is needed.
-    fn write_test_aac(path: &Path) {
-        let wav = path.with_extension("fixture.wav");
-        testsig::write_wav(&wav, 1, &testsig::tone(2.0, 1000.0, 0.25));
-        remux_audio(&wav, path);
-        fs::remove_file(wav).unwrap();
-    }
-
-    #[test]
-    fn e2e_normalizes_generated_wav() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-{}.wav", std::process::id()));
-        write_test_wav(&path);
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let analysis = analyze::run(targets, &path, &job).unwrap();
-        let cache = analysis.cache.map(Arc::new).unwrap();
-        assert!(cache.bytes() > 0);
-        let before = analysis.report;
-        let report = run(targets, Options::default(), &path, Some(before.measurement), Some(cache), &job).unwrap();
-        let after = analyze::run(targets, &path, &job).unwrap().report;
-        assert!((after.measurement.integrated_lufs - before.assessment.expected_lufs).abs() < 1.0);
-        assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5);
-        assert!((after.media.duration - before.media.duration).abs() < 0.5);
-        assert_eq!(report.path, path.display().to_string());
-        assert_eq!(report.input_media.channels, report.output_media.channels);
-        assert_eq!(report.input_media.has_video, report.output_media.has_video);
-        assert!((report.input_media.duration - report.output_media.duration).abs() < 0.5);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn e2e_normalizes_and_calibrates_without_preanalysis_cache() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-uncached-{}.wav", std::process::id()));
-        write_test_wav(&path);
-        let targets = Targets { target_lufs: -5.0, true_peak_db: -9.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-
-        let report = run(targets, Options::default(), &path, None, None, &job).unwrap();
-
-        assert!(report.gain_db.is_finite());
-        assert!(report.limiter_max_reduction_db >= 0.0);
-        assert_eq!(report.input_media.codec, report.output_media.codec);
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn e2e_normalizes_aac_input() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-aac-{}.m4a", std::process::id()));
-        write_test_aac(&path);
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-
-        let report = run(targets, Options::default(), &path, None, None, &job).unwrap();
-
-        assert_eq!(report.input_media.codec, "aac");
-        assert_eq!(report.output_media.codec, "aac");
-        fs::remove_file(path).unwrap();
-    }
-
-    /// Loudness of one audio track of `path`.
-    fn track_lufs(path: &Path, track: usize) -> f64 {
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        analyze::run_track(targets, track, path, &job).unwrap().report.measurement.integrated_lufs
-    }
-
-    #[test]
-    fn lists_audio_tracks_with_their_metadata() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-list-{}.mkv", std::process::id()));
-        av::write_test_tracks(&path, &[0.1, 0.05, 0.2], 1.0, 48_000).unwrap();
-
-        let tracks = av::audio_tracks(&path).unwrap();
-
-        assert_eq!(tracks.len(), 3);
-        assert_eq!(tracks[1].index, 1);
-        assert_eq!((tracks[0].language.as_str(), tracks[1].language.as_str()), ("eng", "por"));
-        assert!(tracks.iter().all(|t| t.channels == 1 && t.sample_rate == 48_000));
-        assert!(av::probe_track(&path, 3).is_err(), "a missing track must be an error");
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn normalizes_only_the_chosen_audio_track() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-pick-{}.mkv", std::process::id()));
-        av::write_test_tracks(&path, &[0.05, 0.02], 8.0, 48_000).unwrap();
-        let (first, second) = (track_lufs(&path, 0), track_lufs(&path, 1));
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-
-        let options = Options { track: 1, ..Options::default() };
-        let report = run(targets, options, &path, None, None, &job).unwrap();
-
-        assert_eq!(report.tracks_processed, 1);
-        assert!((track_lufs(&path, 1) - targets.target_lufs).abs() < 1.0, "the chosen track reaches the target");
-        assert!((track_lufs(&path, 0) - first).abs() < 0.3, "the other track is left alone");
-        assert!(second < targets.target_lufs - 5.0, "the fixture is quiet enough to need gain");
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn normalizes_every_audio_track_when_asked() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-all-{}.mkv", std::process::id()));
-        av::write_test_tracks(&path, &[0.05, 0.02, 0.1], 8.0, 48_000).unwrap();
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-
-        let options = Options { all_tracks: true, ..Options::default() };
-        let report = run(targets, options, &path, None, None, &job).unwrap();
-
-        assert_eq!(report.tracks_processed, 3);
-        for track in 0..3 {
-            assert!((track_lufs(&path, track) - targets.target_lufs).abs() < 1.0, "track {track}");
-        }
-        assert_eq!(av::audio_tracks(&path).unwrap().len(), 3, "no track may be lost");
-        let leftovers = fs::read_dir(std::env::temp_dir())
-            .unwrap()
-            .filter_map(|e| e.ok())
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".") && name.contains("audio-normalizer-all"))
-            .count();
-        assert_eq!(leftovers, 0, "temporary pass files must be cleaned up");
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn leveling_narrows_the_loudness_range_and_still_hits_the_target() {
-        // Four cycles of 6 s loud (0.4) and 6 s quiet (0.08): 14 dB apart.
-        let mut samples = Vec::new();
-        for _ in 0..4 {
-            samples.extend(testsig::tone(6.0, 440.0, 0.4));
-            samples.extend(testsig::tone(6.0, 440.0, 0.08));
-        }
-        let path = std::env::temp_dir().join(format!("audio-normalizer-level-{}.wav", std::process::id()));
-        testsig::write_wav(&path, 1, &samples);
-        let targets = Targets { target_lufs: -16.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let measure = |file: &Path| analyze::run_track(targets, 0, file, &job).unwrap().report.measurement;
-
-        let plain = run(targets, Options { output: OutputMode::Copy, ..Options::default() }, &path, None, None, &job).unwrap();
-        let leveled_options = Options { output: OutputMode::Copy, leveling: true, ..Options::default() };
-        let leveled = run(targets, leveled_options, &path, None, None, &job).unwrap();
-        let (before, plain_after, after) =
-            (measure(&path), measure(Path::new(&plain.output_path)), measure(Path::new(&leveled.output_path)));
-
-        assert!(leveled.leveled && !plain.leveled);
-        println!(
-            "loudness range {:.1} LU -> {:.1} LU leveled ({:.1} LU plain); integrated {:.1} LUFS",
-            before.loudness_range, after.loudness_range, plain_after.loudness_range, after.integrated_lufs
-        );
-        assert!((plain_after.loudness_range - before.loudness_range).abs() < 1.0, "plain gain must not change the range");
-        assert!(
-            after.loudness_range < before.loudness_range - 3.0,
-            "range {:.1} -> {:.1} LU",
-            before.loudness_range,
-            after.loudness_range
-        );
-        assert!((after.integrated_lufs - targets.target_lufs).abs() < 1.0, "target missed: {:.1}", after.integrated_lufs);
-        assert!(after.true_peak_db <= targets.true_peak_db + 0.5);
-        for file in [path.as_path(), Path::new(&plain.output_path), Path::new(&leveled.output_path)] {
-            fs::remove_file(file).unwrap();
-        }
-    }
-
-    #[test]
-    fn lossless_saves_flac_when_the_container_allows_it() {
-        let id = std::process::id();
-        let m4a = std::env::temp_dir().join(format!("audio-normalizer-lossless-{id}.m4a"));
-        let mkv = std::env::temp_dir().join(format!("audio-normalizer-lossless-{id}.mkv"));
-        write_test_aac(&m4a);
-        remux_audio(&m4a, &mkv); // AAC inside Matroska
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let copy = |lossless: bool| Options { output: OutputMode::Copy, lossless, ..Options::default() };
-
-        let lossy = run(targets, copy(false), &mkv, None, None, &job).unwrap();
-        let flac = run(targets, copy(true), &mkv, None, None, &job).unwrap();
-        // An .m4a cannot hold FLAC: the request falls back to the source codec.
-        let kept = run(targets, copy(true), &m4a, None, None, &job).unwrap();
-
-        assert_eq!(lossy.output_media.codec, "aac");
-        assert_eq!(flac.output_media.codec, "flac");
-        assert_eq!(kept.output_media.codec, "aac");
-        let measured = analyze::run_track(targets, 0, Path::new(&flac.output_path), &job).unwrap().report.measurement;
-        assert!((measured.integrated_lufs - targets.target_lufs).abs() < 1.0, "FLAC output missed the target");
-        assert!(measured.true_peak_db < targets.true_peak_db + 0.5);
-        for file in [&m4a, &mkv, Path::new(&lossy.output_path), Path::new(&flac.output_path), Path::new(&kept.output_path)] {
-            fs::remove_file(file).unwrap();
-        }
-    }
-
-    #[test]
-    fn copy_paths_are_numbered_and_never_overwrite() {
-        let dir = std::env::temp_dir().join(format!("audio-normalizer-copies-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let input = dir.join("Clip.MP4");
-        assert_eq!(copy_path(&input).unwrap(), dir.join("Clip (normalized).MP4"));
-        fs::write(dir.join("Clip (normalized).MP4"), b"x").unwrap();
-        assert_eq!(copy_path(&input).unwrap(), dir.join("Clip (normalized 2).MP4"));
-        assert!(copy_path(Path::new("no-extension")).is_err());
-        fs::remove_dir_all(dir).unwrap();
-    }
-
-    #[test]
-    fn e2e_copy_keeps_the_original_untouched() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-copy-{}.wav", std::process::id()));
-        write_test_wav(&path);
-        let original = fs::read(&path).unwrap();
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let options = Options { output: OutputMode::Copy, ..Options::default() };
-
-        let first = run(targets, options, &path, None, None, &job).unwrap();
-        let second = run(targets, options, &path, None, None, &job).unwrap();
-
-        assert!(!first.replaced);
-        assert_eq!(fs::read(&path).unwrap(), original, "the source file must not change");
-        assert_ne!(first.output_path, second.output_path, "a second copy must not overwrite the first");
-        let measured = analyze::run(targets, Path::new(&first.output_path), &job).unwrap().report.measurement;
-        assert!((measured.integrated_lufs - targets.target_lufs).abs() < 1.0);
-        assert!(first.size_after > 0);
-        fs::remove_file(&path).unwrap();
-        fs::remove_file(&first.output_path).unwrap();
-        fs::remove_file(&second.output_path).unwrap();
-    }
-
-    #[test]
-    fn temp_paths_are_hidden_and_require_an_extension() {
-        assert!(temp_path(Path::new("input"), "normalizing").is_err());
-        assert_eq!(
-            temp_path(Path::new("C:/media/clip.MP4"), "normalizing").unwrap(),
-            PathBuf::from("C:/media/.clip.normalizing.mp4"),
-        );
-    }
-
-    #[test]
-    fn describes_media_and_rejects_invalid_encoded_output() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-verify-{}.wav", std::process::id()));
-        write_test_wav(&path);
-        let written = av::probe(&path).unwrap();
-
-        let details = media_details(&written);
-        assert_eq!(details.codec, written.audio.codec);
-        assert_eq!(details.sample_rate, 48_000);
-        assert_eq!(details.channels, 1);
-        assert!(!details.has_video);
-        assert!(verify(&path, &MediaInfo { has_video: true, ..written.clone() }).is_err());
-        assert!(verify(&path, &MediaInfo { duration: 100.0, ..written }).is_err());
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn chain_and_calibration_process_decoded_audio() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-calibrate-{}.wav", std::process::id()));
-        write_test_wav(&path);
-        let info = av::probe(&path).unwrap();
-        let mut chain = Chain::new(&info, 6.0, -1.5, None).unwrap();
-        let mut output = Vec::new();
-        let mut block = vec![0.1; info.audio.sample_rate as usize];
-        chain.process(&mut block, &mut output).unwrap();
-        chain.flush(&mut output).unwrap();
-        assert!(chain.result().unwrap().output_lufs.is_finite());
-
-        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let mut progress = job.stage("calibrate", 0.0, 1.0);
-        let plan = Calibration { base_gain_db: 6.0, ceiling_db: -1.5, target_lufs: -14.0, leveler_reference: None };
-        let gain = calibrate(&AudioSource::File(&path), &info, plan, &job, &mut progress).unwrap();
-        assert!((6.0..=MAX_GAIN_DB).contains(&gain));
-        fs::remove_file(path).unwrap();
-    }
-
-    #[test]
-    fn temporary_file_is_removed_when_not_replaced() {
-        let path = std::env::temp_dir().join(format!("audio-normalizer-temp-{}.tmp", std::process::id()));
-        fs::write(&path, b"temporary").unwrap();
-        drop(TempFile(path.clone()));
-        assert!(!path.exists());
-    }
-
-    #[test]
-    fn replacement_is_atomic_and_missing_output_fails_verification() {
-        let base = std::env::temp_dir().join(format!("audio-normalizer-replace-{}", std::process::id()));
-        let original = base.with_extension("wav");
-        let replacement = base.with_extension("tmp");
-        fs::write(&original, b"old").unwrap();
-        fs::write(&replacement, b"new").unwrap();
-        replace_original(TempFile(replacement), &original).unwrap();
-        assert_eq!(fs::read(&original).unwrap(), b"new");
-        let info = MediaInfo { duration: 1.0, has_video: false, audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 }, track: 0 };
-        assert!(verify(&base.with_extension("missing.wav"), &info).is_err());
-        fs::remove_file(original).unwrap();
-    }
-    use super::super::testsig;
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
-    /// End-to-end run over real media. The files are modified in place, so
-    /// point NORMALIZER_E2E_FILES (`;`-separated) at throwaway copies.
-    #[test]
-    #[ignore]
-    #[cfg(not(coverage))]
-    fn e2e_normalize_files() {
-        let files = std::env::var("NORMALIZER_E2E_FILES").expect("set NORMALIZER_E2E_FILES");
-        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-        for file in files.split(';').filter(|f| !f.is_empty()) {
-            let path = Path::new(file);
-            let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-            let before = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
-            let report = run(targets, Options::default(), path, None, None, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
-            let after = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
-            println!(
-                "{file}: {:.1} -> {:.1} LUFS (report {:.1}, TP {:.1}), TP {:.1} dBTP, limiter {:.1} dB, {:.2}s -> {:.2}s",
-                before.measurement.integrated_lufs,
-                after.measurement.integrated_lufs,
-                report.output_lufs,
-                report.output_true_peak_db,
-                after.measurement.true_peak_db,
-                report.limiter_max_reduction_db,
-                before.media.duration,
-                after.media.duration,
-            );
-            // Equals the target unless the gain was capped at MAX_GAIN_DB.
-            let expected = before.assessment.expected_lufs;
-            assert!((after.measurement.integrated_lufs - expected).abs() < 1.0, "{file}: loudness");
-            assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5, "{file}: true peak");
-            assert!((after.media.duration - before.media.duration).abs() < 0.5, "{file}: duration");
-            assert_eq!(after.media.has_video, before.media.has_video, "{file}: video");
-        }
-    }
-}
+mod tests;

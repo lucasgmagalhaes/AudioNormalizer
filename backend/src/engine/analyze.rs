@@ -36,6 +36,10 @@ pub struct Measurement {
     /// Highest momentary (400 ms window) loudness, when it was measured.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_momentary_lufs: Option<f64>,
+    /// Left/right correlation of a stereo track, -1 (opposite phase) to 1
+    /// (identical). Only measured, never changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stereo_correlation: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,7 +146,11 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             // update rate the EBU specification uses for them.
             let step = (rate as usize / 10).max(1) * stride;
             let (mut max_short_term, mut max_momentary) = (None, None);
+            let mut phase = PhaseMeter::default();
             for block in rx {
+                if stride == 2 {
+                    phase.add(&block);
+                }
                 for chunk in block.chunks(step) {
                     meter.add_frames_f32(chunk).context("falha ao medir loudness")?;
                     max_short_term = higher(max_short_term, meter.loudness_shortterm().ok());
@@ -157,6 +165,7 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
                 sample_peak,
                 max_short_term,
                 max_momentary,
+                stereo_correlation: phase.correlation(),
             })
         });
 
@@ -204,7 +213,8 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             Err(e) if !e.is::<StageStopped>() => return Err(e),
             fed => fed,
         };
-        let LoudnessReading { integrated, range: loudness_range, sample_peak, max_short_term, max_momentary } = loudness?;
+        let LoudnessReading { integrated, range: loudness_range, sample_peak, max_short_term, max_momentary, stereo_correlation } =
+            loudness?;
         let true_peak = peaks.into_iter().collect::<Result<Vec<f64>>>()?.into_iter().fold(0.0, f64::max);
         if frames? == 0 {
             bail!("a faixa de áudio está vazia");
@@ -219,6 +229,7 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             sample_peak_db: linear_to_db(sample_peak),
             max_short_term_lufs: max_short_term,
             max_momentary_lufs: max_momentary,
+            stereo_correlation,
         })
     })
 }
@@ -230,6 +241,32 @@ struct LoudnessReading {
     sample_peak: f64,
     max_short_term: Option<f64>,
     max_momentary: Option<f64>,
+    stereo_correlation: Option<f64>,
+}
+
+/// Running left/right correlation of interleaved stereo audio.
+#[derive(Default)]
+struct PhaseMeter {
+    cross: f64,
+    left: f64,
+    right: f64,
+}
+
+impl PhaseMeter {
+    fn add(&mut self, block: &[f32]) {
+        for frame in block.as_chunks::<2>().0 {
+            let (l, r) = (f64::from(frame[0]), f64::from(frame[1]));
+            self.cross += l * r;
+            self.left += l * l;
+            self.right += r * r;
+        }
+    }
+
+    /// None when a channel is silent: the correlation is then meaningless.
+    fn correlation(&self) -> Option<f64> {
+        let norm = (self.left * self.right).sqrt();
+        (norm > 1e-9).then(|| (self.cross / norm).clamp(-1.0, 1.0))
+    }
 }
 
 /// The higher of the two, ignoring values that are not real loudness yet
@@ -259,6 +296,7 @@ pub(crate) fn read_measurement(meter: &EbuR128, channels: u32) -> Result<Measure
         sample_peak_db: linear_to_db(sample_peak),
         max_short_term_lufs: None,
         max_momentary_lufs: None,
+        stereo_correlation: None,
     })
 }
 
@@ -305,113 +343,4 @@ pub fn assess(m: &Measurement, targets: Targets) -> Assessment {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const TARGETS: Targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
-
-    fn measurement(i: f64, tp: f64) -> Measurement {
-        Measurement {
-            integrated_lufs: i,
-            loudness_range: 6.0,
-            true_peak_db: tp,
-            sample_peak_db: tp - 0.5,
-            max_short_term_lufs: None,
-            max_momentary_lufs: None,
-        }
-    }
-
-    #[test]
-    fn on_target_needs_nothing() {
-        let a = assess(&measurement(-14.2, -3.0), TARGETS);
-        assert_eq!(a.verdict, Verdict::None);
-        assert!((a.gain_db - 0.2).abs() < 1e-9);
-        assert_eq!(a.limiter_reduction_db, 0.0);
-    }
-
-    #[test]
-    fn quiet_audio_gets_gain_and_limiting() {
-        let a = assess(&measurement(-26.0, -4.0), TARGETS);
-        assert_eq!(a.verdict, Verdict::Large);
-        assert!((a.gain_db - 12.0).abs() < 1e-9);
-        assert!((a.limiter_reduction_db - 9.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn gain_is_capped() {
-        let a = assess(&measurement(-60.0, -30.0), TARGETS);
-        assert!(a.gain_capped);
-        assert_eq!(a.gain_db, MAX_GAIN_DB);
-    }
-
-    #[test]
-    fn hot_peaks_alone_are_an_improvement() {
-        let a = assess(&measurement(-14.0, 0.5), TARGETS);
-        assert!(a.peak_over_ceiling);
-        assert_ne!(a.verdict, Verdict::None);
-    }
-
-    #[test]
-    fn classifies_small_and_moderate_improvements() {
-        assert_eq!(assess(&measurement(-15.0, -3.0), TARGETS).verdict, Verdict::Small);
-        assert_eq!(assess(&measurement(-17.5, -3.0), TARGETS).verdict, Verdict::Moderate);
-    }
-
-    #[test]
-    fn the_loudest_window_ignores_values_that_are_not_ready() {
-        assert_eq!(higher(None, Some(f64::NEG_INFINITY)), None);
-        assert_eq!(higher(None, Some(-20.0)), Some(-20.0));
-        assert_eq!(higher(Some(-20.0), Some(-18.0)), Some(-18.0));
-        assert_eq!(higher(Some(-20.0), Some(-25.0)), Some(-20.0));
-        assert_eq!(higher(Some(-20.0), None), Some(-20.0));
-    }
-
-    #[test]
-    fn rejects_a_silent_meter() {
-        let meter = EbuR128::new(1, 48_000, Mode::I | Mode::LRA | Mode::TRUE_PEAK | Mode::SAMPLE_PEAK).unwrap();
-        assert!(read_measurement(&meter, 1).is_err());
-    }
-
-    /// Our measurement must agree with FFmpeg's own `ebur128` filter, run
-    /// in-process through the bridge (no ffmpeg process), on signals that
-    /// exercise channel weighting, noise, gating and loudness range.
-    #[test]
-    fn measurement_matches_the_ffmpeg_ebur128_reference() {
-        let signals: [(&str, u16, Vec<f32>); 4] = [
-            ("tone", 1, testsig::tone(12.0, 1000.0, 0.25)),
-            (
-                "stereo-tones",
-                2,
-                testsig::stereo(&testsig::tone(12.0, 1000.0, 0.25), &testsig::tone(12.0, 440.0, 0.1)),
-            ),
-            ("pink-noise", 1, testsig::pink_noise(12.0, 0.2, 7)),
-            ("bursts-and-silence", 1, testsig::bursts(12.0)),
-        ];
-        for (name, channels, samples) in signals {
-            let path = std::env::temp_dir().join(format!("audio-normalizer-ref-{name}-{}.wav", std::process::id()));
-            testsig::write_wav(&path, channels, &samples);
-            let expected = av::reference_loudness(&path).unwrap();
-            let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-            let measured = run(TARGETS, &path, &job).unwrap().report.measurement;
-            let _ = std::fs::remove_file(&path);
-
-            let near = |label: &str, ours: f64, theirs: f64, tolerance: f64| {
-                assert!(
-                    (ours - theirs).abs() <= tolerance,
-                    "{name}: {label} ours {ours:.2} vs FFmpeg {theirs:.2} (tolerance {tolerance})"
-                );
-            };
-            near("integrated loudness", measured.integrated_lufs, expected.integrated, 0.1);
-            // EBU Tech 3342 allows +-1 LU on loudness range; short synthetic
-            // signals have few short-term blocks, so the percentiles move.
-            near("loudness range", measured.loudness_range, expected.range, 1.0);
-            near("true peak", measured.true_peak_db, linear_to_db(expected.true_peak), 0.3);
-            // The reference reads at frame boundaries, we read every 100 ms.
-            near("max momentary", measured.max_momentary_lufs.unwrap(), expected.max_momentary, 0.5);
-            near("max short-term", measured.max_short_term_lufs.unwrap(), expected.max_short_term, 0.5);
-        }
-    }
-
-    use super::super::testsig;
-    use std::sync::atomic::AtomicBool;
-}
+mod tests;

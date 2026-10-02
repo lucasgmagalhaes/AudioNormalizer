@@ -4,6 +4,7 @@ import { check } from "@tauri-apps/plugin-updater";
 import { isFinished, overallPercent, summarize, type QueueStatus } from "./batch";
 import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
 import {
+  type CleanupOptions,
   api,
   errorMessage,
   isCancelled,
@@ -73,6 +74,8 @@ const ui = {
   targetError: byId("target-error"),
   leveling: byId<HTMLInputElement>("leveling"),
   lossless: byId<HTMLInputElement>("lossless"),
+  highpass: byId<HTMLInputElement>("highpass"),
+  declip: byId<HTMLInputElement>("declip"),
   copyReport: byId<HTMLButtonElement>("copy-report"),
   resultChecks: byId("result-checks"),
   queue: byId("queue"),
@@ -174,6 +177,11 @@ function renderTracks() {
   ui.track.value = options.some((option) => option.value === previous) ? previous : "0";
 }
 
+/** The clean-up stages the user switched on. */
+function cleanupOptions(): CleanupOptions {
+  return { highpass: ui.highpass.checked, declip: ui.declip.checked };
+}
+
 function outputMode(): OutputMode {
   return ui.output.value === "copy" ? "copy" : "replace";
 }
@@ -182,6 +190,8 @@ function outputMode(): OutputMode {
 const LOUDNESS_TOLERANCE_LU = 0.5;
 /** Loudness range above which leveling is worth suggesting. */
 const WIDE_RANGE_LU = 15;
+/** Stereo correlation below which the channels partly cancel out in mono. */
+const OUT_OF_PHASE = -0.3;
 /** Same limits the engine enforces for the target. */
 const TARGET_RANGE = { min: -40, max: -5 };
 
@@ -235,6 +245,8 @@ function render() {
   ui.targetCustom.disabled = busy;
   ui.leveling.disabled = busy;
   ui.lossless.disabled = busy;
+  ui.highpass.disabled = busy;
+  ui.declip.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = hasInput;
@@ -319,6 +331,9 @@ function renderAnalysis() {
   }
   if (a.clipping) {
     notes.push(t("noteClipping"));
+  }
+  if (m.stereoCorrelation !== undefined && m.stereoCorrelation < OUT_OF_PHASE) {
+    notes.push(t("notePhase", { value: decimal(m.stereoCorrelation) }));
   }
   if (!media.hasVideo) {
     notes.push(t("noteNoVideo"));
@@ -432,7 +447,8 @@ function renderResult(report: NormalizeReport | null) {
   byId("result-sub").title = report.outputPath;
   const tracksNote = report.tracksProcessed > 1 ? ` ${t("resultTracks", { count: report.tracksProcessed })}` : "";
   const leveledNote = report.leveled ? ` ${t("resultLeveled")}` : "";
-  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) }) + tracksNote + leveledNote;
+  const declippedNote = report.declippedSamples ? ` ${t("resultDeclipped", { count: report.declippedSamples })}` : "";
+  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) }) + tracksNote + leveledNote + declippedNote;
   renderChecks(report);
   byId("result-verdict").textContent = report.outputMedia.hasVideo ? `${verdict} ${t("resultVerdictVideo")}` : verdict;
   byId("r-before").textContent = lufs(report.inputLufs);
@@ -618,6 +634,7 @@ async function runNormalize() {
       allTracks: choice.all,
       leveling: ui.leveling.checked,
       lossless: ui.lossless.checked,
+      cleanup: cleanupOptions(),
     });
     if (report.replaced) {
       // The file on disk changed: old analysis no longer applies.
@@ -753,6 +770,7 @@ async function runBatch() {
         allTracks: false,
         leveling: ui.leveling.checked,
         lossless: ui.lossless.checked,
+        cleanup: cleanupOptions(),
       });
       item.status = "done";
     } catch (err) {

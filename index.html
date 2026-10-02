@@ -88,6 +88,14 @@
           <small class="field-hint" data-i18n="levelingHint">Aproxima os trechos baixos e altos antes de ajustar o volume. Bom para fala; evite em música.</small>
         </label>
         <label class="field field-wide field-check">
+          <span class="check-row"><input id="highpass" type="checkbox" /><span data-i18n="highpass">Remover grave inaudível e DC offset</span></span>
+          <small class="field-hint" data-i18n="highpassHint">Filtra o ronco abaixo de 20 Hz, que não se ouve mas consome volume. O vídeo e a duração não mudam.</small>
+        </label>
+        <label class="field field-wide field-check">
+          <span class="check-row"><input id="declip" type="checkbox" /><span data-i18n="declip">Reconstruir picos cortados (clipping)</span></span>
+          <small class="field-hint" data-i18n="declipHint">Redesenha os topos achatados da onda. Ajuda em gravações estouradas, mas não é perfeito.</small>
+        </label>
+        <label class="field field-wide field-check">
           <span class="check-row"><input id="lossless" type="checkbox" /><span data-i18n="lossless">Evitar nova perda de qualidade (áudio em FLAC)</span></span>
           <small class="field-hint" data-i18n="losslessHint">Não comprime o áudio de novo, mas o arquivo fica maior. Só vale quando o formato aceita FLAC, como MKV.</small>
         </label>
