@@ -68,6 +68,41 @@ fn bench_components() {
     run("ebur128 SAMPLE_PEAK", &meter(Mode::I | Mode::SAMPLE_PEAK));
     run("ebur128 TRUE_PEAK", &meter(Mode::I | Mode::TRUE_PEAK));
     run("ebur128 analysis (all)", &meter(Mode::I | Mode::LRA | Mode::TRUE_PEAK | Mode::SAMPLE_PEAK));
+    run("analysis loudness thread", &|pcm: &[f32]| {
+        let mut m = EbuR128::new(ch, sr, Mode::I | Mode::LRA | Mode::SAMPLE_PEAK | Mode::M | Mode::S).unwrap();
+        let step = (sr as usize / 10) * ch as usize;
+        let mut acc = 0.0;
+        for c in pcm.chunks(step) {
+            m.add_frames_f32(c).unwrap();
+            acc += m.loudness_shortterm().unwrap_or(0.0) + m.loudness_momentary().unwrap_or(0.0);
+        }
+        std::hint::black_box((acc, m.loudness_global().unwrap(), m.loudness_range().unwrap()));
+    });
+    for (name, momentary, short) in [("momentary only", true, false), ("short-term only", false, true)] {
+        run(&format!("  loudness {name}"), &move |pcm: &[f32]| {
+            let mut m = EbuR128::new(ch, sr, Mode::I | Mode::M | Mode::S).unwrap();
+            let step = (sr as usize / 10) * ch as usize;
+            let mut acc = 0.0;
+            for c in pcm.chunks(step) {
+                m.add_frames_f32(c).unwrap();
+                if momentary {
+                    acc += m.loudness_momentary().unwrap_or(0.0);
+                }
+                if short {
+                    acc += m.loudness_shortterm().unwrap_or(0.0);
+                }
+            }
+            std::hint::black_box(acc);
+        });
+    }
+    run("analysis true peak (1 ch)", &|pcm: &[f32]| {
+        let mut m = EbuR128::new(1, sr, Mode::TRUE_PEAK).unwrap();
+        let mono: Vec<f32> = pcm.iter().step_by(ch as usize).copied().collect();
+        for c in mono.chunks(8192) {
+            m.add_frames_f32(c).unwrap();
+        }
+        std::hint::black_box(m.true_peak(0).unwrap());
+    });
     run("gain + limiter", &|pcm: &[f32]| {
         let mut lim = Limiter::new(ch as usize, sr, 0.8);
         let mut out = Vec::new();

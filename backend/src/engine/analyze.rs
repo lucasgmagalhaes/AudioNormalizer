@@ -20,6 +20,9 @@ pub const MAX_GAIN_DB: f64 = 24.0;
 /// reading the file (30 minutes of 192 kb/s AAC is about 43 MB).
 pub const CACHE_LIMIT_BYTES: u64 = 512 << 20;
 
+/// The short-term loudness is read once every this many 100 ms steps.
+const SHORT_TERM_EVERY: usize = 3;
+
 /// Below this the gated integrated loudness is not meaningful.
 const SILENCE_LUFS: f64 = -70.0;
 
@@ -147,14 +150,20 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             let step = (rate as usize / 10).max(1) * stride;
             let (mut max_short_term, mut max_momentary) = (None, None);
             let mut phase = PhaseMeter::default();
+            let mut reads = 0usize;
             for block in rx {
                 if stride == 2 {
                     phase.add(&block);
                 }
                 for chunk in block.chunks(step) {
                     meter.add_frames_f32(chunk).context("falha ao medir loudness")?;
-                    max_short_term = higher(max_short_term, meter.loudness_shortterm().ok());
                     max_momentary = higher(max_momentary, meter.loudness_momentary().ok());
+                    // The 3 s window moves slowly, and reading it is the costliest
+                    // call here: every few reads keep the peak within a few hundredths of a LU.
+                    if reads % SHORT_TERM_EVERY == 0 {
+                        max_short_term = higher(max_short_term, meter.loudness_shortterm().ok());
+                    }
+                    reads += 1;
                 }
             }
             let integrated = meter.loudness_global().context("falha ao calcular loudness")?;
