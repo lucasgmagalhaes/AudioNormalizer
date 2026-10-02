@@ -27,6 +27,7 @@
   },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": "all",
     "resources": {
       "runtime/*": "./"
@@ -38,5 +39,12 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2RTZEN0M2MzNFQzFDMzYKUldRMkhPd3p4dGZtcHUrNExPQVV6ZjNtRW1UOXJOM0trNm5WdWYzMFNGR0dHSmU5eHdkWHIwVnYK",
+      "endpoints": ["https://github.com/lucasgmagalhaes/AudioNormalizer/releases/latest/download/latest.json"],
+      "windows": { "installMode": "passive" }
+    }
   }
 }

@@ -1,5 +1,6 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { check } from "@tauri-apps/plugin-updater";
 import { applyLanguage, currentLanguage, type Language } from "./i18n";
 import {
   api,
@@ -319,6 +320,22 @@ async function reassess() {
   }
 }
 
+async function checkForUpdates() {
+  try {
+    const update = await check();
+    if (!update) return;
+    const approved = await confirm(`Uma atualização (${update.version}) está disponível. Instalar agora?`, {
+      title: "Atualização disponível",
+      kind: "info",
+      okLabel: "Instalar e reiniciar",
+      cancelLabel: "Depois",
+    });
+    if (approved) await update.downloadAndInstall();
+  } catch (error) {
+    console.warn("Update check failed", error);
+  }
+}
+
 // ---------------------------------------------------------------- wiring
 
 ui.drop.addEventListener("click", () => void pickFile());
@@ -359,3 +376,4 @@ void getCurrentWebview().onDragDropEvent((event) => {
 ui.language.value = currentLanguage();
 applyLanguage(currentLanguage());
 render();
+void checkForUpdates();
