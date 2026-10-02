@@ -41,13 +41,21 @@ jobs:
         with:
           workspaces: "backend -> target"
 
+      - name: Restore FFmpeg development libraries
+        id: ffmpeg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Microsoft\WinGet\Packages\BtbN.FFmpeg.LGPL.Shared.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe
+          key: ${{ runner.os }}-ffmpeg-lgpl-shared-8.1
+
       - name: Install FFmpeg development libraries
         shell: pwsh
         run: |
-          winget install --exact --id BtbN.FFmpeg.LGPL.Shared.8.1 --accept-package-agreements --accept-source-agreements
-          $package = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Packages" -Directory -Filter "BtbN.FFmpeg.LGPL.Shared.8.1_*" |
-            Get-ChildItem -Directory |
-            Select-Object -First 1
+          $packageRoot = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BtbN.FFmpeg.LGPL.Shared.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe"
+          if (-not (Test-Path $packageRoot)) {
+            winget install --exact --id BtbN.FFmpeg.LGPL.Shared.8.1 --accept-package-agreements --accept-source-agreements
+          }
+          $package = Get-ChildItem $packageRoot -Directory | Select-Object -First 1
           if (-not $package -or -not (Test-Path "$($package.FullName)\include") -or -not (Test-Path "$($package.FullName)\lib") -or -not (Test-Path "$($package.FullName)\bin")) {
             throw "The FFmpeg shared development build was not found."
           }
