@@ -460,6 +460,7 @@ impl Drop for TempFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn interpolates_calibration_gain() {
@@ -469,6 +470,46 @@ mod tests {
         assert!((interpolate_gain(&gains, &loudness, -15.5) - 6.75).abs() < 1e-9);
         assert!((interpolate_gain(&gains, &loudness, -14.0) - 8.5).abs() < 1e-9);
         assert_eq!(interpolate_gain(&gains, &loudness, -12.0), 9.0);
+    }
+
+    fn write_test_wav(path: &Path) {
+        let rate = 48_000u32;
+        let frames = rate * 2;
+        let samples: Vec<i16> = (0..frames)
+            .map(|i| ((i as f32 * std::f32::consts::TAU * 1_000.0 / rate as f32).sin() * 3_276.0) as i16)
+            .collect();
+        let data_len = (samples.len() * 2) as u32;
+        let mut wav = Vec::with_capacity(44 + data_len as usize);
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        for sample in samples { wav.extend_from_slice(&sample.to_le_bytes()); }
+        fs::write(path, wav).unwrap();
+    }
+
+    #[test]
+    fn e2e_normalizes_generated_wav() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-{}.wav", std::process::id()));
+        write_test_wav(&path);
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let before = analyze::run(targets, &path, &job).unwrap().report;
+        let report = run(targets, &path, None, None, &job).unwrap();
+        let after = analyze::run(targets, &path, &job).unwrap().report;
+        assert!((after.measurement.integrated_lufs - before.assessment.expected_lufs).abs() < 1.0);
+        assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5);
+        assert!((after.media.duration - before.media.duration).abs() < 0.5);
+        assert_eq!(report.path, path.display().to_string());
+        fs::remove_file(path).unwrap();
     }
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
