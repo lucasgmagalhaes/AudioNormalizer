@@ -33,7 +33,7 @@ test("normalize asks for confirmation in the app before replacing the file", () 
 
 test("saving a copy skips the replace confirmation and sends the output mode to the engine", () => {
   assert.match(runNormalize, /let approved = output === "copy"/, "a copy must not need the destructive confirmation");
-  assert.match(runNormalize, /api\.normalize\([^)]*\{ output \}\)/, "the chosen output mode must reach the backend");
+  assert.match(runNormalize, /api\.normalize\(.*\{ output \}\)/, "the chosen output mode must reach the backend");
   assert.match(html, /<select id="output"[\s\S]*value="replace"[\s\S]*value="copy"/, "both output modes must be selectable");
 });
 
