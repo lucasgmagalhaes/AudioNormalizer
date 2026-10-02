@@ -577,6 +577,7 @@ mod tests {
         assert_eq!(details.codec, written.audio.codec);
         assert_eq!(details.sample_rate, 48_000);
         assert_eq!(details.channels, 1);
+        assert!(!details.has_video);
         assert!(verify(&path, &MediaInfo { has_video: true, ..written.clone() }).is_err());
         assert!(verify(&path, &MediaInfo { duration: 100.0, ..written }).is_err());
         fs::remove_file(path).unwrap();
@@ -629,6 +630,7 @@ mod tests {
     /// point NORMALIZER_E2E_FILES (`;`-separated) at throwaway copies.
     #[test]
     #[ignore]
+    #[cfg(not(coverage))]
     fn e2e_normalize_files() {
         let files = std::env::var("NORMALIZER_E2E_FILES").expect("set NORMALIZER_E2E_FILES");
         let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
