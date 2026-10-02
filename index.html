@@ -47,6 +47,18 @@
         </div>
       </section>
 
+      <section id="queue" class="card" hidden>
+        <div class="queue-head">
+          <h2 data-i18n="queueTitle">Fila de arquivos</h2>
+          <p id="queue-summary" class="muted" aria-live="polite"></p>
+        </div>
+        <ol id="queue-list" class="queue"></ol>
+        <p class="field-hint" data-i18n="queueHint">Cada arquivo usa a primeira faixa de áudio e as configurações abaixo.</p>
+        <div class="result-actions">
+          <button id="queue-again" class="btn btn-secondary" type="button" hidden data-i18n="again">Normalizar outro</button>
+        </div>
+      </section>
+
       <section class="settings" data-i18n-aria-label="settings" aria-label="Configurações">
         <label class="field">
           <span data-i18n="target">Alvo de loudness</span>

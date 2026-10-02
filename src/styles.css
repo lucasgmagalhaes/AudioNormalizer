@@ -774,6 +774,65 @@ select:focus-visible {
   font-weight: 600;
 }
 
+.queue-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.queue-head p {
+  margin: 0;
+}
+
+.queue {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.queue-item {
+  display: grid;
+  grid-template-columns: 18px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--surface-2);
+}
+
+.queue-item svg {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+
+.queue-item.running svg {
+  color: var(--accent);
+}
+
+.queue-item.done svg {
+  color: var(--ok);
+}
+
+.queue-item.failed svg {
+  color: var(--bad);
+}
+
+.queue-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.queue-status {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .checks {
   display: grid;
   gap: 6px;

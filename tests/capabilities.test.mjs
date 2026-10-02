@@ -59,6 +59,25 @@ test("leveling and the result checks are wired end to end", () => {
   assert.match(main, /report\.truePeakCeilingDb/, "the peak check needs the ceiling the engine used");
 });
 
+const runBatch = main.slice(main.indexOf("async function runBatch"), main.indexOf("async function checkForUpdates"));
+
+test("a batch asks once before replacing and then runs the files one after another", () => {
+  const ask = runBatch.indexOf("await askReplace(");
+  const busy = runBatch.indexOf('state.busy = "normalize"');
+  assert.ok(ask !== -1 && busy > ask, "the batch must only start after the user approved");
+  assert.match(runBatch, /let approved = output === "copy"/, "copies need no confirmation");
+  assert.match(runBatch, /for \(const \[index, item\] of items\.entries\(\)\)/, "files must be processed in order");
+  assert.match(runBatch, /await api\.normalize\(item\.file\.path/, "each file is normalized on its own");
+  assert.match(runBatch, /isCancelled\(err\)[\s\S]*state\.stopped = true/, "cancelling must stop the rest of the queue");
+  assert.match(runBatch, /item\.status = "failed"/, "one failure must not stop the others");
+});
+
+test("several files can be chosen from the dialog and by dropping", () => {
+  assert.match(main, /multiple: true/, "the file dialog must allow several files");
+  assert.match(main, /void selectFiles\(payload\.paths\)/, "dropping several files must build a queue");
+  assert.match(html, /<ol id="queue-list"/);
+});
+
 test("normalize reports confirmation dialog failures instead of failing silently", () => {
   const ask = runNormalize.indexOf("await askReplace(");
   const tryIndex = runNormalize.lastIndexOf("try {", ask);

@@ -1,6 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { check } from "@tauri-apps/plugin-updater";
+import { isFinished, overallPercent, summarize, type QueueStatus } from "./batch";
 import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
 import {
   api,
@@ -19,8 +20,21 @@ const VIDEO_EXTENSIONS = [
   "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "mts", "m2ts", "mpg", "mpeg", "3gp",
 ];
 
+interface QueueItem {
+  file: FileInfo;
+  status: QueueStatus;
+  report?: NormalizeReport;
+  message?: string;
+}
+
 interface State {
   file: FileInfo | null;
+  /** Several files chosen at once: they are normalized one after the other. */
+  queue: QueueItem[];
+  /** Which queue file is running, while a batch is. */
+  batch: { index: number; total: number } | null;
+  /** The user cancelled: the files still waiting are skipped. */
+  stopped: boolean;
   analysis: AnalysisReport | null;
   /** Path the analysis belongs to; normalization reuses its measurement. */
   analyzedPath: string | null;
@@ -31,7 +45,7 @@ interface State {
   progress: { stage: Stage; percent: number } | null;
 }
 
-const state: State = { file: null, analysis: null, analyzedPath: null, analyzedTrack: 0, busy: null, report: null, progress: null };
+const state: State = { file: null, queue: [], batch: null, stopped: false, analysis: null, analyzedPath: null, analyzedTrack: 0, busy: null, report: null, progress: null };
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -59,6 +73,10 @@ const ui = {
   targetError: byId("target-error"),
   leveling: byId<HTMLInputElement>("leveling"),
   resultChecks: byId("result-checks"),
+  queue: byId("queue"),
+  queueList: byId("queue-list"),
+  queueSummary: byId("queue-summary"),
+  queueAgain: byId<HTMLButtonElement>("queue-again"),
   trackField: byId("track-field"),
   cancel: byId<HTMLButtonElement>("cancel"),
   progress: byId("progress"),
@@ -143,7 +161,7 @@ function trackLabel(track: AudioTrack): string {
 
 /** Rebuilds the track list, keeping the current choice when it still exists. */
 function renderTracks() {
-  const tracks = state.file?.audioTracks ?? [];
+  const tracks = hasBatch() ? [] : (state.file?.audioTracks ?? []);
   const previous = ui.track.value;
   ui.trackField.hidden = tracks.length < 2;
   const options = tracks.map((track) => new Option(trackLabel(track), String(track.index)));
@@ -181,13 +199,23 @@ function targets(): Targets {
   return { targetLufs: targetLufs(), truePeakDb: Number(ui.ceiling.value) };
 }
 
+function hasBatch(): boolean {
+  return state.queue.length > 1;
+}
+
 function render() {
   const busy = state.busy !== null;
-  ui.dropEmpty.hidden = state.file !== null;
-  ui.dropFile.hidden = state.file === null;
-  ui.drop.classList.toggle("has-file", state.file !== null);
+  const hasInput = state.file !== null || hasBatch();
+  ui.dropEmpty.hidden = hasInput;
+  ui.dropFile.hidden = !hasInput;
+  ui.drop.classList.toggle("has-file", hasInput);
   ui.drop.setAttribute("aria-disabled", String(busy));
-  if (state.file) {
+  if (hasBatch()) {
+    const total = state.queue.reduce((sum, item) => sum + item.file.size, 0);
+    ui.fileName.textContent = t("batchFiles", { count: state.queue.length });
+    ui.fileName.title = state.queue.map((item) => item.file.path).join("\n");
+    ui.fileDetail.textContent = bytes(total);
+  } else if (state.file) {
     ui.fileName.textContent = state.file.name;
     ui.fileName.title = state.file.path;
     ui.fileDetail.textContent = `${bytes(state.file.size)} · ${state.file.directory}`;
@@ -198,7 +226,7 @@ function render() {
   ui.targetError.hidden = valid;
   ui.targetCustom.setAttribute("aria-invalid", String(!valid));
   ui.analyze.disabled = busy || !state.file || !valid;
-  ui.normalize.disabled = busy || !state.file || !valid;
+  ui.normalize.disabled = busy || !hasInput || !valid;
   ui.normalizeLabel.textContent = t(outputMode() === "copy" ? "normalizeCopy" : "normalizeReplace");
   ui.output.disabled = busy;
   ui.track.disabled = busy;
@@ -206,7 +234,8 @@ function render() {
   ui.leveling.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
-  ui.actionHint.hidden = state.file !== null;
+  ui.actionHint.hidden = hasInput;
+  renderQueue();
   ui.cancel.hidden = !busy;
   ui.progress.hidden = !busy;
 }
@@ -215,11 +244,15 @@ function stageLabel(stage: Stage): string {
   return t(`stage${stage[0].toUpperCase()}${stage.slice(1)}`);
 }
 
-function setProgress(stage: Stage, percent: number) {
-  const label = stageLabel(stage);
+function setProgress(stage: Stage, filePercent: number) {
+  const batch = state.batch;
+  const stageText = stageLabel(stage);
+  const label = batch
+    ? t("batchProgress", { current: batch.index + 1, total: batch.total, stage: stageText })
+    : stageText;
   ui.progressLabel.textContent = label;
-  const p = Math.max(0, Math.min(100, percent));
-  state.progress = { stage, percent: p };
+  const p = Math.max(0, Math.min(100, batch ? overallPercent(batch.index, batch.total, filePercent) : filePercent));
+  state.progress = { stage, percent: filePercent };
   ui.progressPercent.textContent = `${Math.floor(p)}%`;
   ui.progressFill.style.transform = `scaleX(${p / 100})`;
   ui.progressBar.setAttribute("aria-valuenow", String(Math.floor(p)));
@@ -377,6 +410,7 @@ async function selectFile(path: string) {
   try {
     const info = await api.inspectFile(path);
     state.file = info;
+    state.queue = [];
     state.analysis = null;
     state.analyzedPath = null;
     ui.track.value = "0";
@@ -390,12 +424,43 @@ async function selectFile(path: string) {
   }
 }
 
+/** One path behaves as before; several become a queue. */
+async function selectFiles(paths: string[]) {
+  if (state.busy || paths.length === 0) {
+    return;
+  }
+  if (paths.length === 1) {
+    await selectFile(paths[0]);
+    return;
+  }
+  const results = await Promise.allSettled(paths.map((path) => api.inspectFile(path)));
+  const files = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  if (files.length < 2) {
+    const failure = results.find((result) => result.status === "rejected");
+    if (files.length === 1) {
+      await selectFile(files[0].path);
+    } else {
+      showError(failure?.status === "rejected" ? errorMessage(failure.reason) : null);
+    }
+    return;
+  }
+  state.queue = files.map((file) => ({ file, status: "waiting" as const }));
+  state.file = null;
+  state.analysis = null;
+  state.analyzedPath = null;
+  showError(null);
+  renderTracks();
+  renderAnalysis();
+  renderResult(null);
+  render();
+}
+
 async function pickFile() {
   if (state.busy) {
     return;
   }
   const selected = await open({
-    multiple: false,
+    multiple: true,
     directory: false,
     title: t("openTitle"),
     filters: [
@@ -403,9 +468,8 @@ async function pickFile() {
       { name: t("openAll"), extensions: ["*"] },
     ],
   });
-  if (typeof selected === "string") {
-    await selectFile(selected);
-  }
+  const paths = Array.isArray(selected) ? selected : typeof selected === "string" ? [selected] : [];
+  await selectFiles(paths);
 }
 
 async function runAnalysis() {
@@ -434,13 +498,13 @@ async function runAnalysis() {
   }
 }
 
-function askReplace(file: FileInfo): Promise<boolean> {
+/** Asks before replacing: `lead` says what is replaced, `gain` what will be applied. */
+function askReplace(lead: string, gain: string): Promise<boolean> {
   const goal = targets();
-  const known = state.analysis && state.analyzedPath === file.path ? state.analysis : null;
-  ui.confirmLead.textContent = t("confirmMessage", { name: file.name });
+  ui.confirmLead.textContent = lead;
   ui.confirmTarget.textContent = lufs(goal.targetLufs);
   ui.confirmCeiling.textContent = `${decimal(goal.truePeakDb)} dBTP`;
-  ui.confirmGain.textContent = known ? db(known.assessment.gainDb) : t("confirmGainPending");
+  ui.confirmGain.textContent = gain;
   return new Promise((resolve) => {
     ui.dialog.returnValue = "";
     ui.dialog.addEventListener("close", () => resolve(ui.dialog.returnValue === "ok"), { once: true });
@@ -459,7 +523,11 @@ async function runNormalize() {
   let approved = output === "copy";
   if (!approved) {
     try {
-      approved = await askReplace(file);
+      const known = state.analysis && state.analyzedPath === file.path ? state.analysis : null;
+      approved = await askReplace(
+        t("confirmMessage", { name: file.name }),
+        known ? db(known.assessment.gainDb) : t("confirmGainPending"),
+      );
     } catch (err) {
       showError(errorMessage(err));
       return;
@@ -514,6 +582,128 @@ async function reassess() {
   }
 }
 
+const QUEUE_ICONS: Record<QueueStatus, string> = {
+  waiting: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /></svg>",
+  running: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M3 12h3l3-7 4 14 3-7h5\" /></svg>",
+  done: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /><path d=\"m8 12 3 3 5-6\" /></svg>",
+  failed: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /><path d=\"M12 8v5m0 3h.01\" /></svg>",
+  skipped: "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /><path d=\"M8 12h8\" /></svg>",
+};
+
+function queueStatusText(item: QueueItem): string {
+  switch (item.status) {
+    case "waiting":
+      return t("queueWaiting");
+    case "running":
+      return t("queueRunning");
+    case "skipped":
+      return t("queueSkipped");
+    case "failed":
+      return item.message ?? t("queueFailed");
+    default:
+      return item.report ? `${lufs(item.report.outputLufs)} · ${decimal(item.report.outputTruePeakDb)} dBTP` : t("queueDone");
+  }
+}
+
+function renderQueue() {
+  ui.queue.hidden = !hasBatch();
+  if (!hasBatch()) {
+    return;
+  }
+  ui.queueList.replaceChildren(
+    ...state.queue.map((item) => {
+      const row = document.createElement("li");
+      row.className = `queue-item ${item.status}`;
+      row.innerHTML = QUEUE_ICONS[item.status];
+      const name = document.createElement("span");
+      name.className = "queue-name";
+      name.textContent = item.file.name;
+      name.title = item.file.path;
+      const status = document.createElement("span");
+      status.className = "queue-status num";
+      status.textContent = queueStatusText(item);
+      row.append(name, status);
+      return row;
+    }),
+  );
+  const statuses = state.queue.map((item) => item.status);
+  const summary = summarize(statuses);
+  const started = statuses.some((status) => status !== "waiting");
+  const finished = started && isFinished(statuses);
+  let text = t("queueCount", { count: summary.total });
+  if (finished) {
+    text = t("batchSummary", { done: summary.done, total: summary.total });
+    if (summary.failed > 0) {
+      text += ` ${t("batchFailed", { failed: summary.failed })}`;
+    }
+    if (summary.skipped > 0) {
+      text += ` ${t("batchSkipped", { skipped: summary.skipped })}`;
+    }
+  }
+  ui.queueSummary.textContent = text;
+  ui.queueAgain.hidden = !finished;
+}
+
+/** Normalizes every queued file in turn with the settings on screen. */
+async function runBatch() {
+  if (state.busy || !hasBatch()) {
+    return;
+  }
+  const output = outputMode();
+  let approved = output === "copy";
+  if (!approved) {
+    try {
+      approved = await askReplace(t("confirmBatchMessage", { count: state.queue.length }), t("confirmGainEach"));
+    } catch (err) {
+      showError(errorMessage(err));
+      return;
+    }
+  }
+  if (!approved || state.busy) {
+    return;
+  }
+  const items = state.queue;
+  for (const item of items) {
+    item.status = "waiting";
+    item.report = undefined;
+    item.message = undefined;
+  }
+  state.busy = "normalize";
+  state.stopped = false;
+  showError(null);
+  render();
+  for (const [index, item] of items.entries()) {
+    if (state.stopped) {
+      item.status = "skipped";
+      continue;
+    }
+    item.status = "running";
+    state.batch = { index, total: items.length };
+    setProgress("analyze", 0);
+    renderQueue();
+    try {
+      item.report = await api.normalize(item.file.path, targets(), null, {
+        output,
+        track: 0,
+        allTracks: false,
+        leveling: ui.leveling.checked,
+      });
+      item.status = "done";
+    } catch (err) {
+      if (isCancelled(err)) {
+        item.status = "skipped";
+        state.stopped = true;
+      } else {
+        item.status = "failed";
+        item.message = errorMessage(err);
+      }
+    }
+  }
+  state.batch = null;
+  state.busy = null;
+  render();
+}
+
 async function checkForUpdates() {
   try {
     const update = await check();
@@ -555,11 +745,12 @@ ui.drop.addEventListener("keydown", (e) => {
   }
 });
 ui.analyze.addEventListener("click", () => void runAnalysis());
-ui.normalize.addEventListener("click", () => void runNormalize());
+ui.normalize.addEventListener("click", () => void (hasBatch() ? runBatch() : runNormalize()));
 ui.confirmOk.addEventListener("click", () => ui.dialog.close("ok"));
 ui.confirmCancel.addEventListener("click", () => ui.dialog.close("cancel"));
-ui.again.addEventListener("click", () => {
+function startOver() {
   state.file = null;
+  state.queue = [];
   state.analysis = null;
   state.analyzedPath = null;
   showError(null);
@@ -567,8 +758,12 @@ ui.again.addEventListener("click", () => {
   renderResult(null);
   render();
   ui.drop.focus();
-});
+}
+
+ui.again.addEventListener("click", startOver);
+ui.queueAgain.addEventListener("click", startOver);
 ui.cancel.addEventListener("click", () => {
+  state.stopped = true;
   ui.progressLabel.textContent = t("cancelling");
   void api.cancel();
 });
@@ -609,10 +804,7 @@ void getCurrentWebview().onDragDropEvent((event) => {
     ui.drop.classList.remove("dragging");
   } else if (payload.type === "drop") {
     ui.drop.classList.remove("dragging");
-    const [first] = payload.paths;
-    if (first) {
-      void selectFile(first);
-    }
+    void selectFiles(payload.paths);
   }
 });
 
