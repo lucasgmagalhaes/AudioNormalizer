@@ -55,6 +55,10 @@ const ui = {
   normalizeLabel: byId("normalize-label"),
   output: byId<HTMLSelectElement>("output"),
   track: byId<HTMLSelectElement>("track"),
+  targetCustom: byId<HTMLInputElement>("target-custom"),
+  targetError: byId("target-error"),
+  leveling: byId<HTMLInputElement>("leveling"),
+  resultChecks: byId("result-checks"),
   trackField: byId("track-field"),
   cancel: byId<HTMLButtonElement>("cancel"),
   progress: byId("progress"),
@@ -154,8 +158,27 @@ function outputMode(): OutputMode {
   return ui.output.value === "copy" ? "copy" : "replace";
 }
 
+/** EBU R128 allows the programme loudness to be this far off the target. */
+const LOUDNESS_TOLERANCE_LU = 0.5;
+/** Loudness range above which leveling is worth suggesting. */
+const WIDE_RANGE_LU = 15;
+/** Same limits the engine enforces for the target. */
+const TARGET_RANGE = { min: -40, max: -5 };
+
+function targetLufs(): number {
+  return ui.target.value === "custom" ? Number(ui.targetCustom.value) : Number(ui.target.value);
+}
+
+function targetValid(): boolean {
+  if (ui.target.value === "custom" && ui.targetCustom.value === "") {
+    return false;
+  }
+  const value = targetLufs();
+  return Number.isFinite(value) && value >= TARGET_RANGE.min && value <= TARGET_RANGE.max;
+}
+
 function targets(): Targets {
-  return { targetLufs: Number(ui.target.value), truePeakDb: Number(ui.ceiling.value) };
+  return { targetLufs: targetLufs(), truePeakDb: Number(ui.ceiling.value) };
 }
 
 function render() {
@@ -170,11 +193,17 @@ function render() {
     ui.fileDetail.textContent = `${bytes(state.file.size)} · ${state.file.directory}`;
   }
 
-  ui.analyze.disabled = busy || !state.file;
-  ui.normalize.disabled = busy || !state.file;
+  const valid = targetValid();
+  ui.targetCustom.hidden = ui.target.value !== "custom";
+  ui.targetError.hidden = valid;
+  ui.targetCustom.setAttribute("aria-invalid", String(!valid));
+  ui.analyze.disabled = busy || !state.file || !valid;
+  ui.normalize.disabled = busy || !state.file || !valid;
   ui.normalizeLabel.textContent = t(outputMode() === "copy" ? "normalizeCopy" : "normalizeReplace");
   ui.output.disabled = busy;
   ui.track.disabled = busy;
+  ui.targetCustom.disabled = busy;
+  ui.leveling.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = state.file !== null;
@@ -249,6 +278,9 @@ function renderAnalysis() {
   if (a.gainCapped) {
     notes.push(t("noteGainCapped"));
   }
+  if (m.loudnessRange > WIDE_RANGE_LU && !ui.leveling.checked) {
+    notes.push(t("noteWideRange", { range: decimal(m.loudnessRange) }));
+  }
   if (a.clipping) {
     notes.push(t("noteClipping"));
   }
@@ -266,6 +298,34 @@ function renderAnalysis() {
   list.hidden = notes.length === 0;
 }
 
+const CHECK_ICON = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"9\" /><path d=\"m8 12 3 3 5-6\" /></svg>";
+const WARN_ICON = "<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><path d=\"M12 4 3 20h18z\" /><path d=\"M12 10v4m0 3h.01\" /></svg>";
+
+/** Did the result meet the loudness target and the peak ceiling? */
+function renderChecks(report: NormalizeReport) {
+  const deviation = Math.abs(report.outputLufs - report.targetLufs);
+  const overPeak = report.outputTruePeakDb - report.truePeakCeilingDb;
+  const checks = [
+    deviation <= LOUDNESS_TOLERANCE_LU
+      ? { ok: true, text: t("checkLoudnessOk", { tolerance: decimal(LOUDNESS_TOLERANCE_LU) }) }
+      : { ok: false, text: t("checkLoudnessOff", { off: decimal(deviation) }) },
+    overPeak <= 0
+      ? { ok: true, text: t("checkPeakOk", { ceiling: decimal(report.truePeakCeilingDb) }) }
+      : { ok: false, text: t("checkPeakOver", { over: decimal(overPeak) }) },
+  ];
+  ui.resultChecks.replaceChildren(
+    ...checks.map((check) => {
+      const item = document.createElement("li");
+      item.className = check.ok ? "check ok" : "check bad";
+      item.innerHTML = check.ok ? CHECK_ICON : WARN_ICON;
+      const text = document.createElement("span");
+      text.textContent = check.text;
+      item.append(text);
+      return item;
+    }),
+  );
+}
+
 function renderResult(report: NormalizeReport | null) {
   state.report = report;
   ui.result.hidden = report === null;
@@ -278,7 +338,9 @@ function renderResult(report: NormalizeReport | null) {
     : t("resultSubCopy", { seconds, name: report.outputPath.split(/[/\\]/).pop() ?? report.outputPath });
   byId("result-sub").title = report.outputPath;
   const tracksNote = report.tracksProcessed > 1 ? ` ${t("resultTracks", { count: report.tracksProcessed })}` : "";
-  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) }) + tracksNote;
+  const leveledNote = report.leveled ? ` ${t("resultLeveled")}` : "";
+  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) }) + tracksNote + leveledNote;
+  renderChecks(report);
   byId("result-verdict").textContent = report.outputMedia.hasVideo ? `${verdict} ${t("resultVerdictVideo")}` : verdict;
   byId("r-before").textContent = lufs(report.inputLufs);
   byId("r-after").textContent = lufs(report.outputLufs);
@@ -422,6 +484,7 @@ async function runNormalize() {
       output,
       track: choice.track,
       allTracks: choice.all,
+      leveling: ui.leveling.checked,
     });
     if (report.replaced) {
       // The file on disk changed: old analysis no longer applies.
@@ -510,6 +573,13 @@ ui.cancel.addEventListener("click", () => {
   void api.cancel();
 });
 ui.output.addEventListener("change", render);
+ui.target.addEventListener("change", render);
+ui.targetCustom.addEventListener("input", () => {
+  render();
+  if (targetValid()) {
+    void reassess();
+  }
+});
 ui.track.addEventListener("change", () => {
   // The analysis measured another track: it no longer applies.
   if (state.analysis && state.analyzedTrack !== trackChoice().track) {

@@ -14,6 +14,7 @@ use std::time::Instant;
 use super::analyze::{self, Measurement, CACHE_LIMIT_BYTES, MAX_GAIN_DB};
 use super::av::{self, AudioCache, AudioSource, MediaInfo, PcmDecoder, Remuxer};
 use super::job::{Cancelled, Job, Progress, StageStopped, QUEUE_BLOCKS};
+use super::leveler::Leveler;
 use super::limiter::Limiter;
 use super::{db_to_linear, linear_to_db, Targets};
 
@@ -27,6 +28,9 @@ const CALIBRATE_ABOVE_DB: f64 = 1.0;
 /// Extra gains rendered side by side during calibration; the last one is the
 /// most calibration may add (more gain means more limiting).
 const CALIBRATION_STEPS_DB: [f64; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
+/// With leveling on, the loudness after the rider can land on either side of
+/// the plain estimate, so calibration also tries lower gains.
+const LEVELING_CALIBRATION_STEPS_DB: [f64; 8] = [-4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0];
 /// Encoded true peak allowed above the ceiling before re-encoding.
 const PEAK_TOLERANCE_DB: f64 = 0.5;
 
@@ -50,6 +54,8 @@ pub struct Options {
     pub track: usize,
     /// Normalize every audio track instead of just `track`.
     pub all_tracks: bool,
+    /// Level the dynamics first (speech): quiet passages up, loud ones down.
+    pub leveling: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,11 +67,14 @@ pub struct NormalizeReport {
     pub replaced: bool,
     /// How many audio tracks were normalized.
     pub tracks_processed: usize,
+    /// The dynamics were leveled before the final gain.
+    pub leveled: bool,
     pub input_lufs: f64,
     pub input_true_peak_db: f64,
     pub output_lufs: f64,
     pub output_true_peak_db: f64,
     pub target_lufs: f64,
+    pub true_peak_ceiling_db: f64,
     pub gain_db: f64,
     pub limiter_max_reduction_db: f64,
     pub elapsed_seconds: f64,
@@ -123,7 +132,7 @@ pub fn run(
         let (measured, cache) = if track == options.track { reuse.take().unwrap_or((None, None)) } else { (None, None) };
         let window = job.window(pass as f64 / passes, 1.0 / passes);
         let current: &Path = finished.last().map_or(input, |previous| previous.temp.0.as_path());
-        let done = normalize_track(targets, track, input, current, pass, measured, cache, &window)?;
+        let done = normalize_track(targets, track, input, current, pass, measured, cache, options.leveling, &window)?;
         finished.push(done);
     }
 
@@ -147,11 +156,13 @@ pub fn run(
         output_path: output_path.display().to_string(),
         replaced: options.output == OutputMode::Replace,
         tracks_processed,
+        leveled: options.leveling,
         input_lufs: measurement.integrated_lufs,
         input_true_peak_db: measurement.true_peak_db,
         output_lufs,
         output_true_peak_db,
         target_lufs: targets.target_lufs,
+        true_peak_ceiling_db: targets.true_peak_db,
         gain_db,
         limiter_max_reduction_db,
         elapsed_seconds: started.elapsed().as_secs_f64(),
@@ -183,6 +194,7 @@ fn normalize_track(
     pass: usize,
     measured: Option<Measurement>,
     mut cache: Option<Arc<AudioCache>>,
+    leveling: bool,
     job: &Job,
 ) -> Result<TrackPass> {
     let info = av::probe_track(source_file, track)?;
@@ -208,13 +220,16 @@ fn normalize_track(
     let mut gain_db = (targets.target_lufs - measurement.integrated_lufs).clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
 
     let predicted_limiting = measurement.true_peak_db + gain_db - ceiling_db;
-    if predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB {
+    // The rider moves the loudness, so leveling always needs the dry run.
+    let leveler_reference = leveling.then_some(measurement.integrated_lufs);
+    if leveling || (predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB) {
         let mut progress = job.stage("calibrate", cursor, 15.0);
         cursor += 15.0;
-        gain_db = calibrate(&source, &info, gain_db, ceiling_db, targets.target_lufs, job, &mut progress)?;
+        let plan = Calibration { base_gain_db: gain_db, ceiling_db, target_lufs: targets.target_lufs, leveler_reference };
+        gain_db = calibrate(&source, &info, plan, job, &mut progress)?;
     }
 
-    let settings = EncodeSettings { gain_db, ceiling_db, encoder_options: "" };
+    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, encoder_options: "" };
     let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
     let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
@@ -238,6 +253,8 @@ fn normalize_track(
 struct EncodeSettings<'a> {
     gain_db: f64,
     ceiling_db: f64,
+    /// Program loudness the leveler pulls toward; None leaves it off.
+    leveler_reference: Option<f64>,
     encoder_options: &'a str,
 }
 
@@ -272,7 +289,7 @@ fn encode(
     let encoder = remuxer.encoder();
     let monitor = remuxer.monitor_format();
     let decoder = source.open(info)?;
-    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db)?;
+    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db, settings.leveler_reference)?;
     let mut progress = job.stage(stage, start, end - start);
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
@@ -388,18 +405,20 @@ struct Rendered {
     limiter_reduction_db: f64,
 }
 
-/// Gain -> true-peak limiter -> integrated-loudness meter.
+/// [Leveler] -> gain -> true-peak limiter -> integrated-loudness meter.
 struct Chain {
+    leveler: Option<Leveler>,
     gain: f32,
     limiter: Limiter,
     meter: EbuR128,
 }
 
 impl Chain {
-    fn new(info: &MediaInfo, gain_db: f64, ceiling_db: f64) -> Result<Self> {
+    fn new(info: &MediaInfo, gain_db: f64, ceiling_db: f64, leveler_reference: Option<f64>) -> Result<Self> {
         let channels = info.audio.channels;
         let sample_rate = info.audio.sample_rate;
         Ok(Self {
+            leveler: leveler_reference.map(|lufs| Leveler::new(channels as usize, sample_rate, lufs)),
             gain: db_to_linear(gain_db) as f32,
             limiter: Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32),
             // Only integrated loudness: peaks are measured on the encoded audio.
@@ -409,6 +428,9 @@ impl Chain {
 
     /// Applies the gain to `block` in place and writes the limited audio to `out`.
     fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
+        if let Some(leveler) = self.leveler.as_mut() {
+            leveler.process(block);
+        }
         for sample in block.iter_mut() {
             *sample *= self.gain;
         }
@@ -430,26 +452,35 @@ impl Chain {
     }
 }
 
+/// What a calibration run needs to know about the chain it renders.
+#[derive(Clone, Copy)]
+struct Calibration {
+    base_gain_db: f64,
+    ceiling_db: f64,
+    target_lufs: f64,
+    leveler_reference: Option<f64>,
+}
+
 /// Dry run that finds the gain which, after limiting, lands on `target`.
 /// One decode feeds a chain per candidate gain, each on its own thread; the
 /// answer is interpolated between the candidates that bracket the target.
 fn calibrate(
     source: &AudioSource,
     info: &MediaInfo,
-    base_gain_db: f64,
-    ceiling_db: f64,
-    target_lufs: f64,
+    plan: Calibration,
     job: &Job,
     progress: &mut Progress,
 ) -> Result<f64> {
-    let mut gains: Vec<f64> = CALIBRATION_STEPS_DB
+    let Calibration { base_gain_db, ceiling_db, target_lufs, leveler_reference } = plan;
+    let steps: &[f64] = if leveler_reference.is_some() { &LEVELING_CALIBRATION_STEPS_DB } else { &CALIBRATION_STEPS_DB };
+    let mut gains: Vec<f64> = steps
         .iter()
-        .map(|step| (base_gain_db + step).min(MAX_GAIN_DB))
+        .map(|step| (base_gain_db + step).clamp(-MAX_GAIN_DB, MAX_GAIN_DB))
         .collect();
     gains.dedup();
     let chains = gains
         .iter()
-        .map(|&gain| Chain::new(info, gain, ceiling_db))
+        .map(|&gain| Chain::new(info, gain, ceiling_db, leveler_reference))
         .collect::<Result<Vec<_>>>()?;
     let mut decoder = source.open(info)?;
     let channels = info.audio.channels as usize;
@@ -785,6 +816,45 @@ mod tests {
     }
 
     #[test]
+    fn leveling_narrows_the_loudness_range_and_still_hits_the_target() {
+        // Four cycles of 6 s loud (0.4) and 6 s quiet (0.08): 14 dB apart.
+        let mut samples = Vec::new();
+        for _ in 0..4 {
+            samples.extend(testsig::tone(6.0, 440.0, 0.4));
+            samples.extend(testsig::tone(6.0, 440.0, 0.08));
+        }
+        let path = std::env::temp_dir().join(format!("audio-normalizer-level-{}.wav", std::process::id()));
+        testsig::write_wav(&path, 1, &samples);
+        let targets = Targets { target_lufs: -16.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let measure = |file: &Path| analyze::run_track(targets, 0, file, &job).unwrap().report.measurement;
+
+        let plain = run(targets, Options { output: OutputMode::Copy, ..Options::default() }, &path, None, None, &job).unwrap();
+        let leveled_options = Options { output: OutputMode::Copy, leveling: true, ..Options::default() };
+        let leveled = run(targets, leveled_options, &path, None, None, &job).unwrap();
+        let (before, plain_after, after) =
+            (measure(&path), measure(Path::new(&plain.output_path)), measure(Path::new(&leveled.output_path)));
+
+        assert!(leveled.leveled && !plain.leveled);
+        println!(
+            "loudness range {:.1} LU -> {:.1} LU leveled ({:.1} LU plain); integrated {:.1} LUFS",
+            before.loudness_range, after.loudness_range, plain_after.loudness_range, after.integrated_lufs
+        );
+        assert!((plain_after.loudness_range - before.loudness_range).abs() < 1.0, "plain gain must not change the range");
+        assert!(
+            after.loudness_range < before.loudness_range - 3.0,
+            "range {:.1} -> {:.1} LU",
+            before.loudness_range,
+            after.loudness_range
+        );
+        assert!((after.integrated_lufs - targets.target_lufs).abs() < 1.0, "target missed: {:.1}", after.integrated_lufs);
+        assert!(after.true_peak_db <= targets.true_peak_db + 0.5);
+        for file in [path.as_path(), Path::new(&plain.output_path), Path::new(&leveled.output_path)] {
+            fs::remove_file(file).unwrap();
+        }
+    }
+
+    #[test]
     fn copy_paths_are_numbered_and_never_overwrite() {
         let dir = std::env::temp_dir().join(format!("audio-normalizer-copies-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
@@ -849,7 +919,7 @@ mod tests {
         let path = std::env::temp_dir().join(format!("audio-normalizer-calibrate-{}.wav", std::process::id()));
         write_test_wav(&path);
         let info = av::probe(&path).unwrap();
-        let mut chain = Chain::new(&info, 6.0, -1.5).unwrap();
+        let mut chain = Chain::new(&info, 6.0, -1.5, None).unwrap();
         let mut output = Vec::new();
         let mut block = vec![0.1; info.audio.sample_rate as usize];
         chain.process(&mut block, &mut output).unwrap();
@@ -858,7 +928,8 @@ mod tests {
 
         let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
         let mut progress = job.stage("calibrate", 0.0, 1.0);
-        let gain = calibrate(&AudioSource::File(&path), &info, 6.0, -1.5, -14.0, &job, &mut progress).unwrap();
+        let plan = Calibration { base_gain_db: 6.0, ceiling_db: -1.5, target_lufs: -14.0, leveler_reference: None };
+        let gain = calibrate(&AudioSource::File(&path), &info, plan, &job, &mut progress).unwrap();
         assert!((6.0..=MAX_GAIN_DB).contains(&gain));
         fs::remove_file(path).unwrap();
     }

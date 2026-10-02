@@ -735,6 +735,73 @@ select:focus-visible {
   grid-column: 1 / -1;
 }
 
+.field-check {
+  cursor: pointer;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  color: var(--text);
+}
+
+.check-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+
+.custom-target {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.custom-target:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.field-error {
+  color: var(--bad);
+  font-weight: 600;
+}
+
+.checks {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check svg {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+
+.check.ok svg {
+  color: var(--ok);
+}
+
+.check.bad svg {
+  color: var(--warn);
+}
+
 .field-hint {
   font-size: 12px;
   font-weight: 400;

@@ -8,6 +8,7 @@ pub mod av;
 #[cfg(all(test, not(coverage)))]
 mod bench;
 pub mod job;
+mod leveler;
 mod limiter;
 pub mod normalize;
 #[cfg(test)]

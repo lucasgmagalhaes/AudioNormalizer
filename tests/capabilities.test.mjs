@@ -44,6 +44,21 @@ test("the chosen audio track reaches both analysis and normalization", () => {
   assert.match(runNormalize, /state\.analyzedTrack === choice\.track/, "an analysis of another track must not be reused");
 });
 
+test("the custom target limits match the ones the engine enforces", () => {
+  const engine = readFileSync("backend/src/engine/mod.rs", "utf8").match(/\((-?\d+)\.0\.\.=(-?\d+)\.0\)\.contains\(&self\.target_lufs\)/);
+  assert.ok(engine, "could not find the target range in engine/mod.rs");
+  const [min, max] = [Number(engine[1]), Number(engine[2])];
+  assert.match(main, new RegExp(`TARGET_RANGE = \\{ min: ${min}, max: ${max} \\}`), "main.ts range differs from the engine");
+  assert.match(html, new RegExp(`id="target-custom"[^>]*min="${min}"[^>]*max="${max}"`), "the input limits differ from the engine");
+});
+
+test("leveling and the result checks are wired end to end", () => {
+  assert.match(html, /<input id="leveling" type="checkbox"/);
+  assert.match(runNormalize, /leveling: ui\.leveling\.checked/, "the leveling choice must reach the engine");
+  assert.match(main, /LOUDNESS_TOLERANCE_LU = 0\.5/, "EBU R128 tolerance is +-0.5 LU");
+  assert.match(main, /report\.truePeakCeilingDb/, "the peak check needs the ceiling the engine used");
+});
+
 test("normalize reports confirmation dialog failures instead of failing silently", () => {
   const ask = runNormalize.indexOf("await askReplace(");
   const tryIndex = runNormalize.lastIndexOf("try {", ask);

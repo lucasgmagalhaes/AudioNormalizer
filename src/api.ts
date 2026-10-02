@@ -68,6 +68,7 @@ export interface NormalizeOptions {
   output: OutputMode;
   track: number;
   allTracks: boolean;
+  leveling: boolean;
 }
 
 export interface NormalizeReport {
@@ -75,11 +76,13 @@ export interface NormalizeReport {
   outputPath: string;
   replaced: boolean;
   tracksProcessed: number;
+  leveled: boolean;
   inputLufs: number;
   inputTruePeakDb: number;
   outputLufs: number;
   outputTruePeakDb: number;
   targetLufs: number;
+  truePeakCeilingDb: number;
   gainDb: number;
   limiterMaxReductionDb: number;
   elapsedSeconds: number;

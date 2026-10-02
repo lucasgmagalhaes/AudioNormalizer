@@ -56,7 +56,10 @@
             <option value="-19" data-i18n="targetPodcastVoice">-19 LUFS · Podcast mono / voz</option>
             <option value="-23">-23 LUFS · TV (EBU R128)</option>
             <option value="-24">-24 LUFS · TV (ATSC A/85)</option>
+            <option value="custom" data-i18n="targetCustom">Personalizado…</option>
           </select>
+          <input id="target-custom" class="custom-target num" type="number" inputmode="decimal" step="0.5" min="-40" max="-5" value="-14" hidden data-i18n-aria-label="targetCustomLabel" aria-label="Alvo personalizado em LUFS" />
+          <small id="target-error" class="field-hint field-error" role="alert" hidden data-i18n="targetInvalid">Informe um valor entre -40 e -5 LUFS.</small>
           <small class="field-hint" data-i18n="targetHint">Quão alto o áudio fica. -14 é o padrão das plataformas de vídeo.</small>
         </label>
         <label class="field">
@@ -67,6 +70,10 @@
             <option value="-2" data-i18n="ceilingMore">-2,0 dBTP · mais margem</option>
           </select>
           <small class="field-hint" data-i18n="ceilingHint">Limite para os picos de volume, para não distorcer ao tocar.</small>
+        </label>
+        <label class="field field-wide field-check">
+          <span class="check-row"><input id="leveling" type="checkbox" /><span data-i18n="leveling">Nivelar a dinâmica (fala)</span></span>
+          <small class="field-hint" data-i18n="levelingHint">Aproxima os trechos baixos e altos antes de ajustar o volume. Bom para fala; evite em música.</small>
         </label>
         <label id="track-field" class="field field-wide" hidden>
           <span data-i18n="track">Faixa de áudio</span>
@@ -174,6 +181,7 @@
           <div><span class="eyebrow" data-i18n="after">Depois</span><span id="r-after" class="big num accent"></span></div>
         </div>
         <p id="result-verdict" class="result-verdict"></p>
+        <ul id="result-checks" class="checks"></ul>
 
         <details class="details">
           <summary data-i18n="details">Detalhes</summary>
