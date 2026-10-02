@@ -13,7 +13,13 @@ Audio Normalizer is a desktop application that brings videos to a consistent lou
 - Applies gain and a look-ahead true-peak limiter with 4x oversampling.
 - Re-encodes only the normalized audio track. Video, subtitles, attachments, chapters, metadata, and other audio tracks are stream-copied.
 - Verifies the generated file before atomically replacing the original. On failure or cancellation, the original file is preserved.
-- Supports targets from -14 to -24 LUFS and true-peak ceilings of -1, -1.5, or -2 dBTP.
+- Supports targets from -14 to -24 LUFS (or a custom value from -40 to -5) and true-peak ceilings of -1, -1.5, or -2 dBTP.
+- Saves the result as a copy next to the original (`name (normalized).ext`) instead of replacing it, if you prefer.
+- Lets you pick the audio track to normalize, or normalize all of them. The other tracks are copied unchanged.
+- Normalizes several files in a queue with the same settings.
+- Optional speech leveling brings quiet and loud passages closer before the final gain; the target is still reached because the gain is calibrated afterwards.
+- Optional FLAC output avoids a second lossy generation when the container accepts it (for example MKV).
+- Reports whether the result met the target (within EBU R128 tolerance of 0.5 LU) and the peak ceiling, plus the loudest momentary and short-term readings, and can copy the report as text.
 
 ## How it works
 
@@ -51,6 +57,10 @@ $env:FFMPEG_DIR = "C:\path\to\ffmpeg-shared"
 ```
 
 `build.rs` compiles the bridge, links FFmpeg, and stages the runtime DLLs for development and packaging.
+
+## Verification
+
+The loudness measurement is checked against FFmpeg's own `ebur128` filter, run in-process through `backend/native/avbridge_ref.c` (libavfilter), on tones, noise, stereo and gated signals. Tests generate their media in Rust or through the bridge, so they never start an `ffmpeg` process. That reference code is a separate object in the static library: nothing in the app calls it, so the application does not load `avfilter`.
 
 ## Development
 
