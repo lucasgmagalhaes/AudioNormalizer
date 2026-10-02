@@ -4,6 +4,9 @@
   "version": "0.1.0",
   "description": "Normalizador de loudness para vídeos (Tauri + Rust + libav)",
   "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

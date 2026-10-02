@@ -39,7 +39,7 @@ The application does not start an `ffmpeg` process. FFmpeg libraries are linked 
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 26 (the version CI and releases use; 24 also works). Tests import TypeScript directly, so 22.18 or newer is the floor
 - Stable Rust with the MSVC toolchain on Windows
 - Visual Studio Build Tools with a C compiler
 - A shared FFmpeg development build containing `include/`, `lib/`, and `bin/`
