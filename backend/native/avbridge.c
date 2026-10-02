@@ -569,8 +569,15 @@ static int container_accepts(const AVOutputFormat *ofmt, enum AVCodecID id)
 
 /* Re-encode with the source's codec family so the container keeps
  * accepting it; fall back to whatever common codec the container takes. */
-static const AVCodec *pick_encoder(enum AVCodecID src, const AVOutputFormat *ofmt)
+static const AVCodec *pick_encoder(enum AVCodecID src, const AVOutputFormat *ofmt, int lossless)
 {
+    /* Asked for lossless: FLAC avoids a second lossy generation, when the
+     * container takes it. Otherwise fall through to the usual choice. */
+    if (lossless) {
+        const AVCodec *flac = avcodec_find_encoder_by_name("flac");
+        if (flac && container_accepts(ofmt, flac->id))
+            return flac;
+    }
     const char *preferred[3] = {NULL, NULL, NULL};
     switch (src) {
     case AV_CODEC_ID_AAC: preferred[0] = "aac"; break;
@@ -610,6 +617,11 @@ static enum AVSampleFormat pick_sample_fmt(const AVCodec *codec)
     if (avcodec_get_supported_config(NULL, codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0,
                                      (const void **)&fmts, &n) < 0 || !fmts || n == 0)
         return AV_SAMPLE_FMT_FLTP;
+    /* FLAC takes integers: 24 bits keep the float processing intact. */
+    if (codec->id == AV_CODEC_ID_FLAC)
+        for (int i = 0; i < n; i++)
+            if (fmts[i] == AV_SAMPLE_FMT_S32)
+                return AV_SAMPLE_FMT_S32;
     for (int i = 0; i < n; i++)
         if (fmts[i] == AV_SAMPLE_FMT_FLTP || fmts[i] == AV_SAMPLE_FMT_FLT)
             return fmts[i];
@@ -664,9 +676,9 @@ static int64_t pick_bit_rate(const AVCodec *codec, const AVCodecParameters *src,
 }
 
 static int open_encoder(AvbRemuxer *m, const AVCodecParameters *src, const char *options,
-                        char *err)
+                        int lossless, char *err)
 {
-    const AVCodec *codec = pick_encoder(src->codec_id, m->out->oformat);
+    const AVCodec *codec = pick_encoder(src->codec_id, m->out->oformat, lossless);
     if (!codec)
         return fail(err, "nenhum codificador de áudio compatível com este formato", 0);
 
@@ -678,6 +690,8 @@ static int open_encoder(AvbRemuxer *m, const AVCodecParameters *src, const char 
     if (ret < 0)
         return fail(err, "layout de canais inválido", ret);
     m->enc->sample_fmt = pick_sample_fmt(codec);
+    if (codec->id == AV_CODEC_ID_FLAC && m->enc->sample_fmt == AV_SAMPLE_FMT_S32)
+        m->enc->bits_per_raw_sample = 24;
     m->enc->sample_rate = pick_sample_rate(codec, m->src_rate);
     m->enc->bit_rate = pick_bit_rate(codec, src, m->enc->ch_layout.nb_channels);
     m->enc->time_base = (AVRational){1, m->enc->sample_rate};
@@ -754,7 +768,7 @@ static int copy_chapters(AvbRemuxer *m, char *err)
 static void open_monitor(AvbRemuxer *m);
 
 AvbRemuxer *avb_remuxer_open(const char *input, int track, const char *output,
-                             const char *encoder_options, char *err)
+                             const char *encoder_options, int prefer_lossless, char *err)
 {
     AvbRemuxer *m = av_mallocz(sizeof(*m));
     if (!m) {
@@ -783,7 +797,7 @@ AvbRemuxer *avb_remuxer_open(const char *input, int track, const char *output,
         fail(err, "formato de saída não suportado", ret);
         goto error;
     }
-    if (open_encoder(m, audio_par, encoder_options, err) < 0)
+    if (open_encoder(m, audio_par, encoder_options, prefer_lossless, err) < 0)
         goto error;
 
     m->stream_map = av_malloc_array(m->in->nb_streams, sizeof(int));

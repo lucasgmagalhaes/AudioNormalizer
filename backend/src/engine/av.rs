@@ -60,6 +60,7 @@ extern "C" {
         track: c_int,
         output: *const c_char,
         encoder_options: *const c_char,
+        prefer_lossless: c_int,
         err: *mut c_char,
     ) -> *mut AvbRemuxer;
     fn avb_remuxer_encoder(mux: *const AvbRemuxer) -> *const c_char;
@@ -399,7 +400,7 @@ unsafe impl Send for Remuxer {}
 
 impl Remuxer {
     /// `encoder_options`: private encoder options as "key=value:key=value".
-    pub fn open(input: &Path, output: &Path, info: &MediaInfo, encoder_options: &str) -> Result<Self> {
+    pub fn open(input: &Path, output: &Path, info: &MediaInfo, encoder_options: &str, lossless: bool) -> Result<Self> {
         init();
         let input = c_path(input)?;
         let output = c_path(output)?;
@@ -407,7 +408,14 @@ impl Remuxer {
         let mut err = ErrBuf::new();
         // SAFETY: valid NUL-terminated strings and error buffer; null is handled below.
         let raw = unsafe {
-            avb_remuxer_open(input.as_ptr(), info.track as c_int, output.as_ptr(), options.as_ptr(), err.ptr())
+            avb_remuxer_open(
+                input.as_ptr(),
+                info.track as c_int,
+                output.as_ptr(),
+                options.as_ptr(),
+                c_int::from(lossless),
+                err.ptr(),
+            )
         };
         let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
         let mut remuxer = Self { ptr, channels: info.audio.channels as usize, monitor_channels: 0 };

@@ -56,6 +56,9 @@ pub struct Options {
     pub all_tracks: bool,
     /// Level the dynamics first (speech): quiet passages up, loud ones down.
     pub leveling: bool,
+    /// Save the audio as FLAC (no second lossy generation) when the
+    /// container accepts it.
+    pub lossless: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,7 +135,7 @@ pub fn run(
         let (measured, cache) = if track == options.track { reuse.take().unwrap_or((None, None)) } else { (None, None) };
         let window = job.window(pass as f64 / passes, 1.0 / passes);
         let current: &Path = finished.last().map_or(input, |previous| previous.temp.0.as_path());
-        let done = normalize_track(targets, track, input, current, pass, measured, cache, options.leveling, &window)?;
+        let done = normalize_track(targets, track, input, current, pass, measured, cache, options.leveling, options.lossless, &window)?;
         finished.push(done);
     }
 
@@ -195,6 +198,7 @@ fn normalize_track(
     measured: Option<Measurement>,
     mut cache: Option<Arc<AudioCache>>,
     leveling: bool,
+    lossless: bool,
     job: &Job,
 ) -> Result<TrackPass> {
     let info = av::probe_track(source_file, track)?;
@@ -229,7 +233,7 @@ fn normalize_track(
         gain_db = calibrate(&source, &info, plan, job, &mut progress)?;
     }
 
-    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, encoder_options: "" };
+    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, lossless, encoder_options: "" };
     let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
     let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
@@ -255,6 +259,8 @@ struct EncodeSettings<'a> {
     ceiling_db: f64,
     /// Program loudness the leveler pulls toward; None leaves it off.
     leveler_reference: Option<f64>,
+    /// Prefer FLAC over the source codec.
+    lossless: bool,
     encoder_options: &'a str,
 }
 
@@ -285,7 +291,7 @@ fn encode(
     job: &Job,
     (stage, start, end): (&'static str, f64, f64),
 ) -> Result<Encoded> {
-    let remuxer = Remuxer::open(input, output, info, settings.encoder_options)?;
+    let remuxer = Remuxer::open(input, output, info, settings.encoder_options, settings.lossless)?;
     let encoder = remuxer.encoder();
     let monitor = remuxer.monitor_format();
     let decoder = source.open(info)?;
@@ -680,14 +686,12 @@ mod tests {
         fs::write(path, wav).unwrap();
     }
 
-    /// Encodes a tone to AAC through our own bridge (WAV in, .m4a out), so
-    /// no ffmpeg executable is needed.
-    fn write_test_aac(path: &Path) {
-        let wav = path.with_extension("fixture.wav");
-        testsig::write_wav(&wav, 1, &testsig::tone(2.0, 1000.0, 0.25));
-        let info = av::probe(&wav).unwrap();
-        let mut decoder = PcmDecoder::open(&wav, &info, 0).unwrap();
-        let mut remuxer = Remuxer::open(&wav, path, &info, "").unwrap();
+    /// Re-encodes `from` into `to` through our own bridge; the container is
+    /// chosen by the extension of `to` and the codec follows the source.
+    fn remux_audio(from: &Path, to: &Path) {
+        let info = av::probe(from).unwrap();
+        let mut decoder = PcmDecoder::open(from, &info, 0).unwrap();
+        let mut remuxer = Remuxer::open(from, to, &info, "", false).unwrap();
         let mut block = Vec::new();
         while decoder.read(&mut block).unwrap() {
             remuxer.write(&block).unwrap();
@@ -696,6 +700,14 @@ mod tests {
         // Windows will not delete a file that is still open.
         drop(remuxer);
         drop(decoder);
+    }
+
+    /// Encodes a tone to AAC through our own bridge (WAV in, .m4a out), so
+    /// no ffmpeg executable is needed.
+    fn write_test_aac(path: &Path) {
+        let wav = path.with_extension("fixture.wav");
+        testsig::write_wav(&wav, 1, &testsig::tone(2.0, 1000.0, 0.25));
+        remux_audio(&wav, path);
         fs::remove_file(wav).unwrap();
     }
 
@@ -850,6 +862,33 @@ mod tests {
         assert!((after.integrated_lufs - targets.target_lufs).abs() < 1.0, "target missed: {:.1}", after.integrated_lufs);
         assert!(after.true_peak_db <= targets.true_peak_db + 0.5);
         for file in [path.as_path(), Path::new(&plain.output_path), Path::new(&leveled.output_path)] {
+            fs::remove_file(file).unwrap();
+        }
+    }
+
+    #[test]
+    fn lossless_saves_flac_when_the_container_allows_it() {
+        let id = std::process::id();
+        let m4a = std::env::temp_dir().join(format!("audio-normalizer-lossless-{id}.m4a"));
+        let mkv = std::env::temp_dir().join(format!("audio-normalizer-lossless-{id}.mkv"));
+        write_test_aac(&m4a);
+        remux_audio(&m4a, &mkv); // AAC inside Matroska
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let copy = |lossless: bool| Options { output: OutputMode::Copy, lossless, ..Options::default() };
+
+        let lossy = run(targets, copy(false), &mkv, None, None, &job).unwrap();
+        let flac = run(targets, copy(true), &mkv, None, None, &job).unwrap();
+        // An .m4a cannot hold FLAC: the request falls back to the source codec.
+        let kept = run(targets, copy(true), &m4a, None, None, &job).unwrap();
+
+        assert_eq!(lossy.output_media.codec, "aac");
+        assert_eq!(flac.output_media.codec, "flac");
+        assert_eq!(kept.output_media.codec, "aac");
+        let measured = analyze::run_track(targets, 0, Path::new(&flac.output_path), &job).unwrap().report.measurement;
+        assert!((measured.integrated_lufs - targets.target_lufs).abs() < 1.0, "FLAC output missed the target");
+        assert!(measured.true_peak_db < targets.true_peak_db + 0.5);
+        for file in [&m4a, &mkv, Path::new(&lossy.output_path), Path::new(&flac.output_path), Path::new(&kept.output_path)] {
             fs::remove_file(file).unwrap();
         }
     }

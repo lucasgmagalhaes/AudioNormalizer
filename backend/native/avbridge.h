@@ -69,10 +69,13 @@ void avb_decoder_close(AvbDecoder *dec);
 
 typedef struct AvbRemuxer AvbRemuxer;
 
-/* `encoder_options` is an optional "key=value:key=value" list of private
+/* `prefer_lossless` asks for FLAC instead of re-encoding with the source codec,
+ * when the output container accepts it; otherwise the usual codec is used.
+ *
+ * `encoder_options` is an optional "key=value:key=value" list of private
  * encoder options (e.g. "aac_coder=fast"); NULL or "" for defaults. */
 AvbRemuxer *avb_remuxer_open(const char *input, int track, const char *output,
-                             const char *encoder_options, char *err);
+                             const char *encoder_options, int prefer_lossless, char *err);
 /* Name of the audio encoder in use, e.g. "aac" or "libopus". */
 const char *avb_remuxer_encoder(const AvbRemuxer *mux);
 /* `samples` must match the decoder's format: interleaved float, same rate
