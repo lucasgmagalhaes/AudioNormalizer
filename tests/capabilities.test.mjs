@@ -128,3 +128,10 @@ test("no unused dialog permission stays granted", () => {
     assert.ok(!capabilities.permissions.includes(permission), `${permission} is not used by the UI`);
   }
 });
+
+test("the drop-down lists are styled, with the native list as the fallback", () => {
+  const css = readFileSync("src/styles.css", "utf8");
+  assert.match(css, /@supports \(appearance: base-select\)/, "styled lists must be feature-gated");
+  assert.match(css, /::picker\(select\)\s*\{[^}]*border-radius: 12px/, "the list panel must be rounded");
+  assert.match(css, /option\s*\{[^}]*border-radius: 8px/, "the options must be rounded");
+});

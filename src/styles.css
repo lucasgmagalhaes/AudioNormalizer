@@ -594,6 +594,83 @@ select:focus-visible {
   outline-offset: 1px;
 }
 
+/*
+ * Chromium (the WebView2 behind the app) can style the drop-down list itself:
+ * rounded panel, rounded options, our colors. Elsewhere the native list stays.
+ */
+@supports (appearance: base-select) {
+  select,
+  ::picker(select) {
+    appearance: base-select;
+  }
+
+  select {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 10px 12px;
+    background: var(--surface);
+    cursor: pointer;
+  }
+
+  select:disabled {
+    cursor: default;
+  }
+
+  select::picker-icon {
+    content: "";
+    flex: none;
+    width: 16px;
+    height: 16px;
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") center / contain no-repeat;
+    transition: rotate 0.15s ease-out;
+  }
+
+  select:open::picker-icon {
+    rotate: 180deg;
+  }
+
+  ::picker(select) {
+    box-sizing: border-box;
+    min-inline-size: anchor-size(width);
+    margin-block: 6px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--surface);
+    color: var(--text);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  }
+
+  option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-radius: 8px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+
+  option:hover,
+  option:focus-visible {
+    background: var(--accent-soft);
+    outline: none;
+  }
+
+  option:checked {
+    background: var(--accent-soft);
+    font-weight: 600;
+  }
+
+  option::checkmark {
+    order: 1;
+    margin-inline-start: auto;
+    color: var(--accent);
+  }
+}
+
 /* buttons */
 .actions {
   display: flex;
