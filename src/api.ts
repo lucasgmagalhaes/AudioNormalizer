@@ -7,11 +7,21 @@ export interface Targets {
   truePeakDb: number;
 }
 
+export interface AudioTrack {
+  index: number;
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  language: string;
+  title: string;
+}
+
 export interface FileInfo {
   path: string;
   name: string;
   directory: string;
   size: number;
+  audioTracks: AudioTrack[];
 }
 
 export interface Measurement {
@@ -56,12 +66,15 @@ export type OutputMode = "replace" | "copy";
 
 export interface NormalizeOptions {
   output: OutputMode;
+  track: number;
+  allTracks: boolean;
 }
 
 export interface NormalizeReport {
   path: string;
   outputPath: string;
   replaced: boolean;
+  tracksProcessed: number;
   inputLufs: number;
   inputTruePeakDb: number;
   outputLufs: number;
@@ -90,8 +103,8 @@ type CommandError =
 
 export const api = {
   inspectFile: (path: string) => invoke<FileInfo>("inspect_file", { path }),
-  analyze: (path: string, targets: Targets) =>
-    invoke<AnalysisReport>("analyze_file", { path, targets }),
+  analyze: (path: string, targets: Targets, track: number) =>
+    invoke<AnalysisReport>("analyze_file", { path, targets, track }),
   assess: (measurement: Measurement, targets: Targets) =>
     invoke<Assessment>("assess", { measurement, targets }),
   normalize: (path: string, targets: Targets, measured: Measurement | null, options: NormalizeOptions) =>

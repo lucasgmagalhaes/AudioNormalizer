@@ -7,6 +7,7 @@ import {
   errorMessage,
   isCancelled,
   type AnalysisReport,
+  type AudioTrack,
   type FileInfo,
   type NormalizeReport,
   type OutputMode,
@@ -23,12 +24,14 @@ interface State {
   analysis: AnalysisReport | null;
   /** Path the analysis belongs to; normalization reuses its measurement. */
   analyzedPath: string | null;
+  /** Audio track the analysis measured. */
+  analyzedTrack: number;
   busy: "analyze" | "normalize" | null;
   report: NormalizeReport | null;
   progress: { stage: Stage; percent: number } | null;
 }
 
-const state: State = { file: null, analysis: null, analyzedPath: null, busy: null, report: null, progress: null };
+const state: State = { file: null, analysis: null, analyzedPath: null, analyzedTrack: 0, busy: null, report: null, progress: null };
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -51,6 +54,8 @@ const ui = {
   normalize: byId<HTMLButtonElement>("normalize"),
   normalizeLabel: byId("normalize-label"),
   output: byId<HTMLSelectElement>("output"),
+  track: byId<HTMLSelectElement>("track"),
+  trackField: byId("track-field"),
   cancel: byId<HTMLButtonElement>("cancel"),
   progress: byId("progress"),
   progressLabel: byId("progress-label"),
@@ -113,6 +118,38 @@ function channelsLabel(n: number): string {
 
 // ---------------------------------------------------------------- state -> UI
 
+/** Which audio track to work on, and whether to normalize all of them. */
+function trackChoice(): { track: number; all: boolean } {
+  if (ui.track.value === "all") {
+    return { track: 0, all: true };
+  }
+  return { track: Number(ui.track.value) || 0, all: false };
+}
+
+function trackLabel(track: AudioTrack): string {
+  const parts = [track.codec.toUpperCase(), channelsLabel(track.channels)];
+  if (track.language) {
+    parts.push(track.language);
+  }
+  if (track.title) {
+    parts.push(track.title);
+  }
+  return t("trackOption", { n: track.index + 1, details: parts.join(" · ") });
+}
+
+/** Rebuilds the track list, keeping the current choice when it still exists. */
+function renderTracks() {
+  const tracks = state.file?.audioTracks ?? [];
+  const previous = ui.track.value;
+  ui.trackField.hidden = tracks.length < 2;
+  const options = tracks.map((track) => new Option(trackLabel(track), String(track.index)));
+  if (tracks.length > 1) {
+    options.push(new Option(t("trackAll"), "all"));
+  }
+  ui.track.replaceChildren(...options);
+  ui.track.value = options.some((option) => option.value === previous) ? previous : "0";
+}
+
 function outputMode(): OutputMode {
   return ui.output.value === "copy" ? "copy" : "replace";
 }
@@ -137,6 +174,7 @@ function render() {
   ui.normalize.disabled = busy || !state.file;
   ui.normalizeLabel.textContent = t(outputMode() === "copy" ? "normalizeCopy" : "normalizeReplace");
   ui.output.disabled = busy;
+  ui.track.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = state.file !== null;
@@ -239,7 +277,8 @@ function renderResult(report: NormalizeReport | null) {
     ? t("resultSub", { seconds })
     : t("resultSubCopy", { seconds, name: report.outputPath.split(/[/\\]/).pop() ?? report.outputPath });
   byId("result-sub").title = report.outputPath;
-  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) });
+  const tracksNote = report.tracksProcessed > 1 ? ` ${t("resultTracks", { count: report.tracksProcessed })}` : "";
+  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) }) + tracksNote;
   byId("result-verdict").textContent = report.outputMedia.hasVideo ? `${verdict} ${t("resultVerdictVideo")}` : verdict;
   byId("r-before").textContent = lufs(report.inputLufs);
   byId("r-after").textContent = lufs(report.outputLufs);
@@ -278,7 +317,9 @@ async function selectFile(path: string) {
     state.file = info;
     state.analysis = null;
     state.analyzedPath = null;
+    ui.track.value = "0";
     showError(VIDEO_EXTENSIONS.includes(ext) ? null : t("errorNotVideo"));
+    renderTracks();
     renderAnalysis();
     renderResult(null);
     render();
@@ -316,8 +357,10 @@ async function runAnalysis() {
   setProgress("analyze", 0);
   render();
   try {
-    state.analysis = await api.analyze(file.path, targets());
+    const { track } = trackChoice();
+    state.analysis = await api.analyze(file.path, targets(), track);
     state.analyzedPath = file.path;
+    state.analyzedTrack = track;
   } catch (err) {
     if (!isCancelled(err)) {
       showError(errorMessage(err));
@@ -363,8 +406,11 @@ async function runNormalize() {
   if (!approved || state.busy || state.file?.path !== file.path) {
     return;
   }
+  const choice = trackChoice();
   const measured =
-    state.analysis && state.analyzedPath === file.path ? state.analysis.measurement : null;
+    state.analysis && state.analyzedPath === file.path && state.analyzedTrack === choice.track
+      ? state.analysis.measurement
+      : null;
 
   state.busy = "normalize";
   showError(null);
@@ -372,7 +418,11 @@ async function runNormalize() {
   setProgress(measured === null ? "analyze" : "normalize", 0);
   render();
   try {
-    const report = await api.normalize(file.path, targets(), measured, { output });
+    const report = await api.normalize(file.path, targets(), measured, {
+      output,
+      track: choice.track,
+      allTracks: choice.all,
+    });
     if (report.replaced) {
       // The file on disk changed: old analysis no longer applies.
       state.analysis = null;
@@ -423,6 +473,7 @@ async function checkForUpdates() {
 
 /** Re-render text built from state; static markup is handled by applyLanguage. */
 function refreshLanguage() {
+  renderTracks();
   renderAnalysis();
   renderResult(state.report);
   render();
@@ -459,6 +510,13 @@ ui.cancel.addEventListener("click", () => {
   void api.cancel();
 });
 ui.output.addEventListener("change", render);
+ui.track.addEventListener("change", () => {
+  // The analysis measured another track: it no longer applies.
+  if (state.analysis && state.analyzedTrack !== trackChoice().track) {
+    state.analysis = null;
+    renderAnalysis();
+  }
+});
 ui.target.addEventListener("change", () => void reassess());
 ui.ceiling.addEventListener("change", () => void reassess());
 ui.language.addEventListener("change", () => {
