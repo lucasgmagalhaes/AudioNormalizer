@@ -19,10 +19,12 @@ const bundles = Object.fromEntries(
   }),
 ) as Record<Language, FluentBundle>;
 
-function format(language: Language, key: string): string {
+export type MessageArgs = Record<string, string | number>;
+
+function format(language: Language, key: string, args?: MessageArgs): string {
   const id = key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
   const pattern = bundles[language].getMessage(id)?.value;
-  return pattern ? bundles[language].formatPattern(pattern, null, []) : key;
+  return pattern ? bundles[language].formatPattern(pattern, args ?? null, []) : key;
 }
 
 export function currentLanguage(): Language {
@@ -30,8 +32,21 @@ export function currentLanguage(): Language {
   return languages.includes(stored as Language) ? stored as Language : "pt-BR";
 }
 
-export function t(key: string): string {
-  return format(currentLanguage(), key);
+export function t(key: string, args?: MessageArgs): string {
+  return format(currentLanguage(), key, args);
+}
+
+const numberFormats = new Map<Language, Intl.NumberFormat>();
+
+/** One-decimal number in the active interface language. */
+export function decimal(value: number): string {
+  const language = currentLanguage();
+  let formatter = numberFormats.get(language);
+  if (!formatter) {
+    formatter = new Intl.NumberFormat(language, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    numberFormats.set(language, formatter);
+  }
+  return formatter.format(value);
 }
 
 export function applyLanguage(language: Language) {

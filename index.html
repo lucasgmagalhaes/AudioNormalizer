@@ -46,7 +46,7 @@
           <select id="target">
             <option value="-14" selected>-14 LUFS · YouTube, Spotify, Instagram, TikTok</option>
             <option value="-16">-16 LUFS · Apple Music, podcasts</option>
-            <option value="-19">-19 LUFS · Podcast mono / voz</option>
+            <option value="-19" data-i18n="targetPodcastVoice">-19 LUFS · Podcast mono / voz</option>
             <option value="-23">-23 LUFS · TV (EBU R128)</option>
             <option value="-24">-24 LUFS · TV (ATSC A/85)</option>
           </select>
@@ -54,9 +54,9 @@
         <label class="field">
           <span data-i18n="ceiling">Teto de pico</span>
           <select id="ceiling">
-            <option value="-1" selected>-1,0 dBTP · recomendado</option>
-            <option value="-1.5">-1,5 dBTP</option>
-            <option value="-2">-2,0 dBTP · mais margem</option>
+            <option value="-1" selected data-i18n="ceilingRecommended">-1,0 dBTP · recomendado</option>
+            <option value="-1.5" data-i18n="ceilingMid">-1,5 dBTP</option>
+            <option value="-2" data-i18n="ceilingMore">-2,0 dBTP · mais margem</option>
           </select>
         </label>
       </section>
@@ -75,7 +75,7 @@
 
       <section id="progress" class="card progress" hidden aria-live="polite">
         <div class="progress-head">
-          <span id="progress-label">Processando…</span>
+          <span id="progress-label" data-i18n="progressInitial">Processando…</span>
           <span id="progress-percent" class="num">0%</span>
         </div>
         <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -88,31 +88,31 @@
       <section id="analysis" class="card" hidden>
         <div class="verdict">
           <div>
-            <p class="eyebrow">Pré-análise</p>
+            <p class="eyebrow" data-i18n="preAnalysis">Pré-análise</p>
             <h2 id="verdict-title"></h2>
             <p id="verdict-text" class="muted"></p>
           </div>
           <div class="potential">
             <span id="potential-value" class="potential-value num"></span>
-            <span class="potential-label">potencial de melhoria</span>
+            <span class="potential-label" data-i18n="potential">potencial de melhoria</span>
           </div>
         </div>
         <div class="bar bar-thin"><div id="potential-fill" class="bar-fill"></div></div>
 
         <div class="scale" aria-hidden="true">
           <div class="scale-track"></div>
-          <div id="scale-target" class="scale-target"><span>alvo</span></div>
-          <div id="scale-current" class="scale-current"><span>atual</span></div>
+          <div id="scale-target" class="scale-target"><span data-i18n="scaleTarget">alvo</span></div>
+          <div id="scale-current" class="scale-current"><span data-i18n="scaleCurrent">atual</span></div>
           <div class="scale-labels"><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 LUFS</span></div>
         </div>
 
         <dl class="metrics">
-          <div><dt>Loudness atual</dt><dd id="m-current" class="num"></dd></div>
-          <div><dt>Alvo</dt><dd id="m-target" class="num"></dd></div>
-          <div><dt>Ajuste de ganho</dt><dd id="m-gain" class="num"></dd></div>
-          <div><dt>Pico (true peak)</dt><dd id="m-peak" class="num"></dd></div>
-          <div><dt>Faixa dinâmica (LRA)</dt><dd id="m-lra" class="num"></dd></div>
-          <div><dt>Áudio</dt><dd id="m-audio"></dd></div>
+          <div><dt data-i18n="current">Loudness atual</dt><dd id="m-current" class="num"></dd></div>
+          <div><dt data-i18n="targetShort">Alvo</dt><dd id="m-target" class="num"></dd></div>
+          <div><dt data-i18n="gain">Ajuste de ganho</dt><dd id="m-gain" class="num"></dd></div>
+          <div><dt data-i18n="peak">Pico (true peak)</dt><dd id="m-peak" class="num"></dd></div>
+          <div><dt data-i18n="range">Faixa dinâmica (LRA)</dt><dd id="m-lra" class="num"></dd></div>
+          <div><dt data-i18n="audio">Áudio</dt><dd id="m-audio"></dd></div>
         </dl>
         <ul id="notes" class="notes"></ul>
       </section>
@@ -121,34 +121,34 @@
         <div class="result-head">
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></svg>
           <div>
-            <h2>Normalização concluída</h2>
+            <h2 data-i18n="complete">Normalização concluída</h2>
             <p id="result-sub" class="muted"></p>
           </div>
         </div>
         <div class="before-after">
-          <div><span class="eyebrow">Antes</span><span id="r-before" class="big num"></span></div>
+          <div><span class="eyebrow" data-i18n="before">Antes</span><span id="r-before" class="big num"></span></div>
           <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-5-5 5 5-5 5" /></svg>
-          <div><span class="eyebrow">Depois</span><span id="r-after" class="big num accent"></span></div>
+          <div><span class="eyebrow" data-i18n="after">Depois</span><span id="r-after" class="big num accent"></span></div>
         </div>
-        <div class="result-chart" aria-label="Comparação do processamento">
-          <div class="chart-row"><span>Loudness</span><div class="chart-track"><i id="chart-loudness-before" class="chart-before"></i><i id="chart-loudness-after" class="chart-after"></i></div><span id="chart-loudness" class="num"></span></div>
-          <div class="chart-row"><span>True peak</span><div class="chart-track"><i id="chart-peak-before" class="chart-before"></i><i id="chart-peak-after" class="chart-after"></i></div><span id="chart-peak" class="num"></span></div>
+        <div class="result-chart" data-i18n-aria-label="chartLabel" aria-label="Comparação do processamento">
+          <div class="chart-row"><span data-i18n="loudness">Loudness</span><div class="chart-track"><i id="chart-loudness-before" class="chart-before"></i><i id="chart-loudness-after" class="chart-after"></i></div><span id="chart-loudness" class="num"></span></div>
+          <div class="chart-row"><span data-i18n="truePeak">True peak</span><div class="chart-track"><i id="chart-peak-before" class="chart-before"></i><i id="chart-peak-after" class="chart-after"></i></div><span id="chart-peak" class="num"></span></div>
         </div>
         <dl class="metrics">
-          <div><dt>Ganho aplicado</dt><dd id="r-gain" class="num"></dd></div>
-          <div><dt>Pico final</dt><dd id="r-peak" class="num"></dd></div>
-          <div><dt>Limitador</dt><dd id="r-limiter" class="num"></dd></div>
-          <div><dt>Tamanho</dt><dd id="r-size" class="num"></dd></div>
+          <div><dt data-i18n="appliedGain">Ganho aplicado</dt><dd id="r-gain" class="num"></dd></div>
+          <div><dt data-i18n="finalPeak">Pico final</dt><dd id="r-peak" class="num"></dd></div>
+          <div><dt data-i18n="limiter">Limitador</dt><dd id="r-limiter" class="num"></dd></div>
+          <div><dt data-i18n="size">Tamanho</dt><dd id="r-size" class="num"></dd></div>
         </dl>
         <dl class="file-diff">
-          <div><dt>Formato</dt><dd id="r-codec"></dd></div>
-          <div><dt>Áudio</dt><dd id="r-audio"></dd></div>
-          <div><dt>Duração</dt><dd id="r-duration" class="num"></dd></div>
-          <div><dt>Vídeo</dt><dd id="r-video"></dd></div>
+          <div><dt data-i18n="format">Formato</dt><dd id="r-codec"></dd></div>
+          <div><dt data-i18n="audio">Áudio</dt><dd id="r-audio"></dd></div>
+          <div><dt data-i18n="duration">Duração</dt><dd id="r-duration" class="num"></dd></div>
+          <div><dt data-i18n="video">Vídeo</dt><dd id="r-video"></dd></div>
         </dl>
       </section>
 
-      <footer class="footnote">
+      <footer class="footnote" data-i18n="footnote">
         O resultado substitui o arquivo original. Vídeo, legendas e demais faixas são copiados sem recompressão.
       </footer>
     </main>
