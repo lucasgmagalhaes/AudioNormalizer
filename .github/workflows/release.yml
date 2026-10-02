@@ -103,7 +103,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $assets = Get-ChildItem backend\target\release\bundle\nsis\*.exe, backend\target\release\bundle\msi\*.msi, backend\target\release\bundle\inno\*.exe, latest.json | ForEach-Object FullName
-          if (-not $assets) { throw "No Windows installers were produced." }
+          $nsis = @(Get-ChildItem -Path "backend/target/release/bundle/nsis/*.exe" -File -ErrorAction SilentlyContinue)
+          if ($nsis.Count -eq 0) { throw "The required NSIS updater installer was not produced." }
+          $assets = @(
+            $nsis
+            Get-ChildItem -Path "backend/target/release/bundle/msi/*.msi" -File -ErrorAction SilentlyContinue
+            Get-ChildItem -Path "backend/target/release/bundle/inno/*.exe" -File -ErrorAction SilentlyContinue
+            Get-Item -LiteralPath latest.json
+          ) | ForEach-Object FullName
           $pre = if ('${{ inputs.prerelease }}' -eq 'true') { '--prerelease' } else { '' }
           gh release create "${{ inputs.tag }}" $assets --title "Audio Normalizer ${{ inputs.version }}" --generate-notes $pre
