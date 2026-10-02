@@ -44,7 +44,7 @@ interface State {
 
 const state: State = { file: null, analysis: null, analyzedPath: null, busy: null };
 
-function $<T extends HTMLElement = HTMLElement>(id: string): T {
+function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
   if (!el) {
     throw new Error(`#${id} not found`);
@@ -53,25 +53,25 @@ function $<T extends HTMLElement = HTMLElement>(id: string): T {
 }
 
 const ui = {
-  drop: $("drop"),
+  drop: byId("drop"),
   dropEmpty: document.querySelector<HTMLElement>(".drop-empty")!,
   dropFile: document.querySelector<HTMLElement>(".drop-file")!,
-  fileName: $("file-name"),
-  fileDetail: $("file-detail"),
-  target: $<HTMLSelectElement>("target"),
-  ceiling: $<HTMLSelectElement>("ceiling"),
-  language: $<HTMLSelectElement>("language"),
-  analyze: $<HTMLButtonElement>("analyze"),
-  normalize: $<HTMLButtonElement>("normalize"),
-  cancel: $<HTMLButtonElement>("cancel"),
-  progress: $("progress"),
-  progressLabel: $("progress-label"),
-  progressPercent: $("progress-percent"),
-  progressFill: $("progress-fill"),
+  fileName: byId("file-name"),
+  fileDetail: byId("file-detail"),
+  target: byId<HTMLSelectElement>("target"),
+  ceiling: byId<HTMLSelectElement>("ceiling"),
+  language: byId<HTMLSelectElement>("language"),
+  analyze: byId<HTMLButtonElement>("analyze"),
+  normalize: byId<HTMLButtonElement>("normalize"),
+  cancel: byId<HTMLButtonElement>("cancel"),
+  progress: byId("progress"),
+  progressLabel: byId("progress-label"),
+  progressPercent: byId("progress-percent"),
+  progressFill: byId("progress-fill"),
   progressBar: document.querySelector<HTMLElement>("#progress .bar")!,
-  error: $("error"),
-  analysis: $("analysis"),
-  result: $("result"),
+  error: byId("error"),
+  analysis: byId("analysis"),
+  result: byId("result"),
 };
 
 // ---------------------------------------------------------------- formatting
@@ -169,7 +169,7 @@ function renderAnalysis() {
 
   const { media, measurement: m, assessment: a } = report;
   ui.analysis.dataset.verdict = a.verdict;
-  $("verdict-title").textContent = VERDICTS[a.verdict];
+  byId("verdict-title").textContent = VERDICTS[a.verdict];
 
   const off = Math.abs(a.deviationLu);
   let text: string;
@@ -181,20 +181,20 @@ function renderAnalysis() {
     const direction = a.deviationLu < 0 ? "abaixo" : "acima";
     text = `O áudio está ${nf1.format(off)} LU ${direction} do alvo; será aplicado ganho de ${db(a.gainDb)}.`;
   }
-  $("verdict-text").textContent = text;
+  byId("verdict-text").textContent = text;
 
-  $("potential-value").textContent = `${Math.round(a.improvementPercent)}%`;
-  $("potential-fill").style.width = `${Math.max(2, a.improvementPercent)}%`;
+  byId("potential-value").textContent = `${Math.round(a.improvementPercent)}%`;
+  byId("potential-fill").style.width = `${Math.max(2, a.improvementPercent)}%`;
 
-  $("scale-current").style.left = scalePosition(m.integratedLufs);
-  $("scale-target").style.left = scalePosition(a.targetLufs);
+  byId("scale-current").style.left = scalePosition(m.integratedLufs);
+  byId("scale-target").style.left = scalePosition(a.targetLufs);
 
-  $("m-current").textContent = lufs(m.integratedLufs);
-  $("m-target").textContent = lufs(a.targetLufs);
-  $("m-gain").textContent = db(a.gainDb);
-  $("m-peak").textContent = `${nf1.format(m.truePeakDb)} dBTP`;
-  $("m-lra").textContent = `${nf1.format(m.loudnessRange)} LU`;
-  $("m-audio").textContent =
+  byId("m-current").textContent = lufs(m.integratedLufs);
+  byId("m-target").textContent = lufs(a.targetLufs);
+  byId("m-gain").textContent = db(a.gainDb);
+  byId("m-peak").textContent = `${nf1.format(m.truePeakDb)} dBTP`;
+  byId("m-lra").textContent = `${nf1.format(m.loudnessRange)} LU`;
+  byId("m-audio").textContent =
     `${media.codec.toUpperCase()} · ${channelsLabel(media.channels)} · ${media.sampleRate / 1000} kHz · ${duration(media.duration)}`;
 
   const notes: string[] = [];
@@ -212,7 +212,7 @@ function renderAnalysis() {
   if (!media.hasVideo) {
     notes.push("Nenhuma faixa de vídeo encontrada; apenas o áudio será processado.");
   }
-  const list = $("notes");
+  const list = byId("notes");
   list.replaceChildren(
     ...notes.map((n) => {
       const li = document.createElement("li");
@@ -228,15 +228,15 @@ function renderResult(report: NormalizeReport | null) {
   if (!report) {
     return;
   }
-  $("result-sub").textContent = `Arquivo substituído em ${nf1.format(report.elapsedSeconds)} s.`;
-  $("result-sub").title = report.path;
-  $("r-before").textContent = lufs(report.inputLufs);
-  $("r-after").textContent = lufs(report.outputLufs);
-  $("r-gain").textContent = db(report.gainDb);
-  $("r-peak").textContent = `${nf1.format(report.outputTruePeakDb)} dBTP`;
-  $("r-limiter").textContent =
+  byId("result-sub").textContent = `Arquivo substituído em ${nf1.format(report.elapsedSeconds)} s.`;
+  byId("result-sub").title = report.path;
+  byId("r-before").textContent = lufs(report.inputLufs);
+  byId("r-after").textContent = lufs(report.outputLufs);
+  byId("r-gain").textContent = db(report.gainDb);
+  byId("r-peak").textContent = `${nf1.format(report.outputTruePeakDb)} dBTP`;
+  byId("r-limiter").textContent =
     report.limiterMaxReductionDb > 0.05 ? `até ${nf1.format(report.limiterMaxReductionDb)} dB` : "não atuou";
-  $("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
+  byId("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
   const chart = (id: string, value: number) => {
     $(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`;
   };
@@ -244,14 +244,14 @@ function renderResult(report: NormalizeReport | null) {
   chart("chart-loudness-after", report.outputLufs);
   chart("chart-peak-before", report.inputTruePeakDb);
   chart("chart-peak-after", report.outputTruePeakDb);
-  $("chart-loudness").textContent = `${lufs(report.inputLufs)} → ${lufs(report.outputLufs)}`;
-  $("chart-peak").textContent = `${db(report.inputTruePeakDb, "dBTP")} → ${db(report.outputTruePeakDb, "dBTP")}`;
+  byId("chart-loudness").textContent = `${lufs(report.inputLufs)} → ${lufs(report.outputLufs)}`;
+  byId("chart-peak").textContent = `${db(report.inputTruePeakDb, "dBTP")} → ${db(report.outputTruePeakDb, "dBTP")}`;
   const before = report.inputMedia;
   const after = report.outputMedia;
-  $("r-codec").textContent = `${before.codec.toUpperCase()} → ${after.codec.toUpperCase()}`;
-  $("r-audio").textContent = `${channelsLabel(before.channels)} / ${before.sampleRate / 1000} kHz → ${channelsLabel(after.channels)} / ${after.sampleRate / 1000} kHz`;
-  $("r-duration").textContent = `${duration(before.duration)} → ${duration(after.duration)}`;
-  $("r-video").textContent = `${before.hasVideo ? "preservado" : "sem vídeo"} → ${after.hasVideo ? "preservado" : "sem vídeo"}`;
+  byId("r-codec").textContent = `${before.codec.toUpperCase()} → ${after.codec.toUpperCase()}`;
+  byId("r-audio").textContent = `${channelsLabel(before.channels)} / ${before.sampleRate / 1000} kHz → ${channelsLabel(after.channels)} / ${after.sampleRate / 1000} kHz`;
+  byId("r-duration").textContent = `${duration(before.duration)} → ${duration(after.duration)}`;
+  byId("r-video").textContent = `${before.hasVideo ? "preservado" : "sem vídeo"} → ${after.hasVideo ? "preservado" : "sem vídeo"}`;
 }
 
 // ---------------------------------------------------------------- actions
