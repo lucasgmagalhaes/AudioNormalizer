@@ -8,6 +8,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "typecheck": "tsc --noEmit",
+    "test:ui": "node --test tests/*.test.mjs",
     "tauri": "tauri --config backend/tauri.conf.json",
     "app:dev": "tauri dev --config backend/tauri.conf.json",
     "app:build": "tauri build --config backend/tauri.conf.json",
