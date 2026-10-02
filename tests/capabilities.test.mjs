@@ -8,9 +8,9 @@ const main = readFileSync("src/main.ts", "utf8");
 // Tauri denies plugin calls without a matching permission, so a missing entry
 // makes the button handler fail silently. Keep each API used in the UI listed.
 const required = [
-  { api: /\bconfirm\(/, permission: "dialog:allow-confirm" },
   { api: /\bopen\(/, permission: "dialog:allow-open" },
   { api: /\bcheck\(/, permission: "updater:default" },
+  { api: /\bopenUrl\(/, permission: "opener:default" },
 ];
 
 for (const { api, permission } of required) {
@@ -111,4 +111,20 @@ test("the optional audio clean-up is off by default and reaches the engine for s
   }
   assert.equal(main.match(/cleanup: cleanupOptions\(\)/g)?.length, 2, "both normalize paths must send it");
   assert.match(main, /highpass: ui\.highpass\.checked, declip: ui\.declip\.checked/);
+});
+
+test("the app updates itself before showing anything, and the menu can do it again", () => {
+  assert.match(html, /<div id="viewport" class="viewport" inert>/, "the app must start covered and unreachable");
+  assert.match(html, /<div id="update-screen" class="update-screen"(?![^>]*hidden)/, "the update screen must be up from the first paint");
+  assert.match(main, /check\(\{ timeout: UPDATE_CHECK_TIMEOUT_MS \}\)/, "no internet must not keep the app closed");
+  assert.match(main, /update\.downloadAndInstall\(\(event\)/, "the download must report progress");
+  assert.match(main, /if \(autoUpdateEnabled\(\)\) \{\s*void runUpdate\(false\);/, "the check runs at startup");
+  assert.match(main, /run: \(\) => void runUpdate\(true\)/, "the Help menu must run the same update");
+  assert.doesNotMatch(main, /confirm\(t\("update/, "no modal asks before updating");
+});
+
+test("no unused dialog permission stays granted", () => {
+  for (const permission of ["dialog:allow-confirm", "dialog:allow-message"]) {
+    assert.ok(!capabilities.permissions.includes(permission), `${permission} is not used by the UI`);
+  }
 });

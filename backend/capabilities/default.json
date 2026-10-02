@@ -11,8 +11,6 @@
     "core:window:allow-start-dragging",
     "core:window:allow-close",
     "dialog:allow-open",
-    "dialog:allow-confirm",
-    "dialog:allow-message",
     "opener:default",
     "updater:default"
   ]

@@ -1,5 +1,5 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { confirm, message, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
@@ -70,6 +70,11 @@ const ui = {
   ceiling: byId<HTMLSelectElement>("ceiling"),
   aboutDialog: byId<HTMLDialogElement>("about-dialog"),
   aboutVersion: byId("about-version"),
+  viewport: byId("viewport"),
+  updateScreen: byId("update-screen"),
+  updateStatus: byId("update-status"),
+  updateProgress: byId<HTMLProgressElement>("update-progress"),
+  updateContinue: byId<HTMLButtonElement>("update-continue"),
   analyze: byId<HTMLButtonElement>("analyze"),
   normalize: byId<HTMLButtonElement>("normalize"),
   normalizeLabel: byId("normalize-label"),
@@ -812,33 +817,77 @@ function setAutoUpdate(enabled: boolean) {
   }
 }
 
+/** Longest the update check may take before the app opens anyway (no internet, slow network). */
+const UPDATE_CHECK_TIMEOUT_MS = 8000;
+
+/** Set while the update screen is up, so menu actions that need the app wait. */
+let updating = false;
+
+function setUpdateScreen(status: string, options: { percent?: number; dismiss?: boolean } = {}) {
+  ui.updateStatus.textContent = status;
+  ui.updateProgress.hidden = false;
+  if (options.percent === undefined) {
+    ui.updateProgress.removeAttribute("value");
+  } else {
+    ui.updateProgress.value = options.percent;
+  }
+  ui.updateContinue.hidden = !options.dismiss;
+  if (options.dismiss) {
+    ui.updateProgress.hidden = true;
+    ui.updateContinue.focus();
+  }
+}
+
+function showUpdateScreen(visible: boolean) {
+  updating = visible;
+  ui.updateScreen.hidden = !visible;
+  ui.viewport.inert = visible;
+}
+
 /**
- * Looks for a newer release. The automatic check at startup stays quiet unless
- * there is an update; a manual one also says when there is none or it failed.
+ * The update screen: looks for a newer release and, when there is one,
+ * downloads and installs it (the installer restarts the app) before the app
+ * shows anything. At startup it disappears on its own when there is nothing to
+ * install or the check fails; a manual check (from the menu) stays on screen
+ * with the outcome until dismissed.
  */
-async function checkForUpdates(manual = false) {
+async function runUpdate(manual: boolean) {
+  if (updating) {
+    return;
+  }
+  showUpdateScreen(true);
+  setUpdateScreen(t("updateChecking"));
   try {
-    const update = await check();
+    const update = await check({ timeout: UPDATE_CHECK_TIMEOUT_MS });
     if (!update) {
-      if (manual) {
-        await message(t("updateNone", { version: await getVersion() }), { title: t("updateTitle"), kind: "info" });
+      if (!manual) {
+        return showUpdateScreen(false);
       }
-      return;
+      return setUpdateScreen(t("updateNone", { version: await getVersion() }), { dismiss: true });
     }
-    const approved = await confirm(t("updateMessage", { version: update.version }), {
-      title: t("updateTitle"),
-      kind: "info",
-      okLabel: t("updateOk"),
-      cancelLabel: t("updateLater"),
+    let total = 0;
+    let received = 0;
+    setUpdateScreen(t("updateDownloading", { version: update.version }));
+    await update.downloadAndInstall((event) => {
+      if (event.event === "Started") {
+        total = event.data.contentLength ?? 0;
+      } else if (event.event === "Progress") {
+        received += event.data.chunkLength;
+        const percent = total > 0 ? Math.min(100, Math.round((received / total) * 100)) : undefined;
+        setUpdateScreen(t("updateDownloading", { version: update.version }), { percent });
+      } else {
+        setUpdateScreen(t("updateInstalling", { version: update.version }));
+      }
     });
-    if (approved) {
-      await update.downloadAndInstall();
-    }
+    // On Windows the installer takes over and restarts the app; getting here
+    // means it did not, so leave the screen with that outcome.
+    setUpdateScreen(t("updateInstalling", { version: update.version }));
   } catch (error) {
-    console.warn("Update check failed", error);
-    if (manual) {
-      await message(t("updateFailed", { error: errorMessage(error) }), { title: t("updateTitle"), kind: "error" });
+    console.warn("Update failed", error);
+    if (!manual) {
+      return showUpdateScreen(false);
     }
+    setUpdateScreen(t("updateFailed", { error: errorMessage(error) }), { dismiss: true });
   }
 }
 
@@ -868,7 +917,7 @@ function menus(): Menu[] {
       id: "file",
       label: t("menuFile"),
       entries: [
-        { id: "import", label: t("menuImport"), shortcut: "Ctrl+O", disabled: busy, run: () => void pickFile() },
+        { id: "import", label: t("menuImport"), shortcut: "Ctrl+O", disabled: busy || updating, run: () => void pickFile() },
         {
           id: "reveal",
           label: t("menuReveal"),
@@ -905,7 +954,7 @@ function menus(): Menu[] {
       id: "help",
       label: t("menuHelp"),
       entries: [
-        { id: "updates", label: t("menuCheckUpdates"), run: () => void checkForUpdates(true) },
+        { id: "updates", label: t("menuCheckUpdates"), disabled: updating, run: () => void runUpdate(true) },
         { separator: true },
         { id: "issue", label: t("menuReportIssue"), run: () => openExternal(`${REPOSITORY_URL}/issues/new`) },
         { id: "repository", label: t("menuRepository"), run: () => openExternal(REPOSITORY_URL) },
@@ -1025,9 +1074,11 @@ void getCurrentWebview().onDragDropEvent((event) => {
 applyLanguage(currentLanguage());
 titlebar.refresh();
 render();
-// Wait a moment so the update prompt does not cover the first screen.
-window.setTimeout(() => {
-  if (autoUpdateEnabled()) {
-    void checkForUpdates();
-  }
-}, 4000);
+ui.updateContinue.addEventListener("click", () => showUpdateScreen(false));
+// The update screen is already covering the app (index.html); it goes away by
+// itself unless an update is installed.
+if (autoUpdateEnabled()) {
+  void runUpdate(false);
+} else {
+  showUpdateScreen(false);
+}

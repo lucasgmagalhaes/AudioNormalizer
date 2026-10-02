@@ -308,6 +308,72 @@ body {
   margin: 0;
 }
 
+/* update screen: covers the app (below the title bar) while it updates */
+.update-screen {
+  position: fixed;
+  inset: 36px 0 0 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  background: var(--bg);
+}
+
+.update-mark {
+  width: 72px;
+  height: 72px;
+}
+
+.update-status {
+  margin: 0;
+  max-width: 420px;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.update-progress {
+  width: min(280px, calc(100vw - 48px));
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.update-progress::-webkit-progress-bar {
+  background: var(--surface-2);
+}
+
+.update-progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+.update-progress:indeterminate {
+  background: linear-gradient(90deg, var(--surface-2) 0%, var(--accent) 50%, var(--surface-2) 100%) 0 0 / 40% 100% no-repeat var(--surface-2);
+  animation: update-indeterminate 1.1s ease-in-out infinite;
+}
+
+@keyframes update-indeterminate {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-progress:indeterminate {
+    animation: none;
+  }
+}
+
 /* header */
 .brand {
   display: flex;
