@@ -520,6 +520,20 @@ mod tests {
             PathBuf::from("C:/media/.clip.normalizing.mp4"),
         );
     }
+
+    #[test]
+    fn replacement_is_atomic_and_missing_output_fails_verification() {
+        let base = std::env::temp_dir().join(format!("audio-normalizer-replace-{}", std::process::id()));
+        let original = base.with_extension("wav");
+        let replacement = base.with_extension("tmp");
+        fs::write(&original, b"old").unwrap();
+        fs::write(&replacement, b"new").unwrap();
+        replace_original(TempFile(replacement), &original).unwrap();
+        assert_eq!(fs::read(&original).unwrap(), b"new");
+        let info = MediaInfo { duration: 1.0, has_video: false, audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 } };
+        assert!(verify(&base.with_extension("missing.wav"), &info).is_err());
+        fs::remove_file(original).unwrap();
+    }
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 
