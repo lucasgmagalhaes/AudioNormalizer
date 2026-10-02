@@ -511,6 +511,15 @@ mod tests {
         assert_eq!(report.path, path.display().to_string());
         fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    fn temp_paths_are_hidden_and_require_an_extension() {
+        assert!(temp_path(Path::new("input"), "normalizing").is_err());
+        assert_eq!(
+            temp_path(Path::new("C:/media/clip.MP4"), "normalizing").unwrap(),
+            PathBuf::from("C:/media/.clip.normalizing.mp4"),
+        );
+    }
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 

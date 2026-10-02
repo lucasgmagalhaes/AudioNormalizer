@@ -1,11 +1,11 @@
-# Audio Normalizer
-
-[![CI](https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml/badge.svg)](https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer/graph/badge.svg)](https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer)
-
 <p align="center">
   <img src="logo.svg" alt="Audio Normalizer logo" width="150" />
+  <br />
+  <a href="https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml"><img src="https://github.com/lucasgmagalhaes/AudioNormalizer/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer"><img src="https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer/graph/badge.svg" alt="codecov" /></a>
 </p>
+
+# Audio Normalizer
 
 Audio Normalizer is a desktop application that brings videos to a consistent loudness target using EBU R128 / ITU-R BS.1770 measurement. It is built for creators who want predictable playback volume across platforms without re-encoding their video.
 
