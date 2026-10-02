@@ -12,7 +12,9 @@ const bundles = Object.fromEntries(
   languages.map((language) => {
     const bundle = new FluentBundle(language, { useIsolating: false });
     const errors = bundle.addResource(new FluentResource(resources[language]));
-    if (errors.length) throw new Error(`Invalid Fluent resource for ${language}`);
+    if (errors.length) {
+      throw new Error(`Invalid Fluent resource for ${language}`);
+    }
     return [language, bundle];
   }),
 ) as Record<Language, FluentBundle>;
@@ -28,11 +30,17 @@ export function currentLanguage(): Language {
   return languages.includes(stored as Language) ? stored as Language : "pt-BR";
 }
 
-export function t(key: string): string { return format(currentLanguage(), key); }
+export function t(key: string): string {
+  return format(currentLanguage(), key);
+}
 
 export function applyLanguage(language: Language) {
   localStorage.setItem("audio-normalizer.language", language);
   document.documentElement.lang = language;
-  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => { el.textContent = format(language, el.dataset.i18n!); });
-  document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((el) => { el.setAttribute("aria-label", format(language, el.dataset.i18nAriaLabel!)); });
+  document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => {
+    el.textContent = format(language, el.dataset.i18n!);
+  });
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((el) => {
+    el.setAttribute("aria-label", format(language, el.dataset.i18nAriaLabel!));
+  });
 }

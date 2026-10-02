@@ -46,7 +46,9 @@ const state: State = { file: null, analysis: null, analyzedPath: null, busy: nul
 
 function $<T extends HTMLElement = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
-  if (!el) throw new Error(`#${id} not found`);
+  if (!el) {
+    throw new Error(`#${id} not found`);
+  }
   return el as T;
 }
 
@@ -98,10 +100,18 @@ function duration(seconds: number): string {
 }
 
 function channelsLabel(n: number): string {
-  if (n === 1) return "mono";
-  if (n === 2) return "estéreo";
-  if (n === 6) return "5.1";
-  if (n === 8) return "7.1";
+  if (n === 1) {
+    return "mono";
+  }
+  if (n === 2) {
+    return "estéreo";
+  }
+  if (n === 6) {
+    return "5.1";
+  }
+  if (n === 8) {
+    return "7.1";
+  }
   return `${n} canais`;
 }
 
@@ -153,7 +163,9 @@ function scalePosition(value: number): string {
 function renderAnalysis() {
   const report = state.analysis;
   ui.analysis.hidden = report === null;
-  if (!report) return;
+  if (!report) {
+    return;
+  }
 
   const { media, measurement: m, assessment: a } = report;
   ui.analysis.dataset.verdict = a.verdict;
@@ -213,7 +225,9 @@ function renderAnalysis() {
 
 function renderResult(report: NormalizeReport | null) {
   ui.result.hidden = report === null;
-  if (!report) return;
+  if (!report) {
+    return;
+  }
   $("result-sub").textContent = `Arquivo substituído em ${nf1.format(report.elapsedSeconds)} s.`;
   $("result-sub").title = report.path;
   $("r-before").textContent = lufs(report.inputLufs);
@@ -223,7 +237,9 @@ function renderResult(report: NormalizeReport | null) {
   $("r-limiter").textContent =
     report.limiterMaxReductionDb > 0.05 ? `até ${nf1.format(report.limiterMaxReductionDb)} dB` : "não atuou";
   $("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
-  const chart = (id: string, value: number) => { $(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`; };
+  const chart = (id: string, value: number) => {
+    $(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`;
+  };
   chart("chart-loudness-before", report.inputLufs);
   chart("chart-loudness-after", report.outputLufs);
   chart("chart-peak-before", report.inputTruePeakDb);
@@ -241,7 +257,9 @@ function renderResult(report: NormalizeReport | null) {
 // ---------------------------------------------------------------- actions
 
 async function selectFile(path: string) {
-  if (state.busy) return;
+  if (state.busy) {
+    return;
+  }
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   try {
     const info = await api.inspectFile(path);
@@ -258,7 +276,9 @@ async function selectFile(path: string) {
 }
 
 async function pickFile() {
-  if (state.busy) return;
+  if (state.busy) {
+    return;
+  }
   const selected = await open({
     multiple: false,
     directory: false,
@@ -268,11 +288,15 @@ async function pickFile() {
       { name: "Todos os arquivos", extensions: ["*"] },
     ],
   });
-  if (typeof selected === "string") await selectFile(selected);
+  if (typeof selected === "string") {
+    await selectFile(selected);
+  }
 }
 
 async function runAnalysis() {
-  if (!state.file || state.busy) return;
+  if (!state.file || state.busy) {
+    return;
+  }
   const file = state.file;
   state.busy = "analyze";
   showError(null);
@@ -283,7 +307,9 @@ async function runAnalysis() {
     state.analysis = await api.analyze(file.path, targets());
     state.analyzedPath = file.path;
   } catch (err) {
-    if (!isCancelled(err)) showError(errorMessage(err));
+    if (!isCancelled(err)) {
+      showError(errorMessage(err));
+    }
   } finally {
     state.busy = null;
     renderAnalysis();
@@ -292,7 +318,9 @@ async function runAnalysis() {
 }
 
 async function runNormalize() {
-  if (!state.file || state.busy) return;
+  if (!state.file || state.busy) {
+    return;
+  }
   const file = state.file;
   let approved: boolean;
   try {
@@ -304,7 +332,9 @@ async function runNormalize() {
     showError(errorMessage(err));
     return;
   }
-  if (!approved || state.busy || state.file?.path !== file.path) return;
+  if (!approved || state.busy || state.file?.path !== file.path) {
+    return;
+  }
   const measured =
     state.analysis && state.analyzedPath === file.path ? state.analysis.measurement : null;
 
@@ -330,7 +360,9 @@ async function runNormalize() {
 }
 
 async function reassess() {
-  if (!state.analysis || state.busy) return;
+  if (!state.analysis || state.busy) {
+    return;
+  }
   try {
     state.analysis = { ...state.analysis, assessment: await api.assess(state.analysis.measurement, targets()) };
     renderAnalysis();
@@ -342,14 +374,18 @@ async function reassess() {
 async function checkForUpdates() {
   try {
     const update = await check();
-    if (!update) return;
+    if (!update) {
+      return;
+    }
     const approved = await confirm(`Uma atualização (${update.version}) está disponível. Instalar agora?`, {
       title: "Atualização disponível",
       kind: "info",
       okLabel: "Instalar e reiniciar",
       cancelLabel: "Depois",
     });
-    if (approved) await update.downloadAndInstall();
+    if (approved) {
+      await update.downloadAndInstall();
+    }
   } catch (error) {
     console.warn("Update check failed", error);
   }
@@ -375,7 +411,9 @@ ui.ceiling.addEventListener("change", () => void reassess());
 ui.language.addEventListener("change", () => applyLanguage(ui.language.value as Language));
 
 void api.onProgress((event) => {
-  if (state.busy) setProgress(event.stage, event.percent);
+  if (state.busy) {
+    setProgress(event.stage, event.percent);
+  }
 });
 
 // Files dropped on the window arrive as native paths through Tauri.
@@ -388,7 +426,9 @@ void getCurrentWebview().onDragDropEvent((event) => {
   } else if (payload.type === "drop") {
     ui.drop.classList.remove("dragging");
     const [first] = payload.paths;
-    if (first) void selectFile(first);
+    if (first) {
+      void selectFile(first);
+    }
   }
 });
 

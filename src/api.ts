@@ -99,7 +99,9 @@ export function isCancelled(err: unknown): boolean {
 
 export function errorMessage(err: unknown): string {
   const e = err as CommandError | string | undefined;
-  if (typeof e === "string") return e;
+  if (typeof e === "string") {
+    return e;
+  }
   switch (e?.kind) {
     case "busy":
       return "Já existe um processamento em andamento.";
