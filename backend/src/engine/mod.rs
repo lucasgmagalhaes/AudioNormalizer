@@ -5,6 +5,7 @@
 
 pub mod analyze;
 pub mod av;
+pub mod batch;
 #[cfg(all(test, not(coverage)))]
 mod bench;
 mod cleanup;

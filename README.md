@@ -83,6 +83,16 @@ Run the engine tests:
 npm run test:core
 ```
 
+### Docker
+
+A `Dockerfile` reproduces the CI checks on Linux (lint, UI tests, frontend build and the engine tests, with FFmpeg from Debian). The app itself is a Windows desktop program, so the image is a build and test environment, not a way to run it:
+
+```bash
+docker build -t audio-normalizer .
+```
+
+Use `--target frontend` to stop after the frontend checks.
+
 ## End-to-end testing
 
 The end-to-end test modifies files in place. Always use disposable copies:

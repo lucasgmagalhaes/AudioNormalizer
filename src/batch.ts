@@ -9,13 +9,9 @@ export interface BatchSummary {
   skipped: number;
 }
 
-/** Progress of the whole batch while file `index` (0-based) is at `filePercent`. */
-export function overallPercent(index: number, total: number, filePercent: number): number {
-  if (total <= 0) {
-    return 0;
-  }
-  const clamped = Math.max(0, Math.min(100, filePercent));
-  return Math.min(100, ((index + clamped / 100) / total) * 100);
+/** How many files are over, whatever the outcome. */
+export function settled(statuses: readonly QueueStatus[]): number {
+  return statuses.filter((status) => status !== "waiting" && status !== "running").length;
 }
 
 export function summarize(statuses: readonly QueueStatus[]): BatchSummary {

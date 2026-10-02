@@ -116,6 +116,14 @@ export interface ProgressEvent {
   percent: number;
 }
 
+/** What happened to one file of a batch, as the backend reports it. */
+export type BatchFileEvent = { index: number } & (
+  | { status: "running" }
+  | { status: "done"; report: NormalizeReport }
+  | { status: "failed"; message: string }
+  | { status: "skipped" }
+);
+
 type CommandError =
   | { kind: "busy" }
   | { kind: "cancelled" }
@@ -129,9 +137,14 @@ export const api = {
     invoke<Assessment>("assess", { measurement, targets }),
   normalize: (path: string, targets: Targets, measured: Measurement | null, options: NormalizeOptions) =>
     invoke<NormalizeReport>("normalize_file", { path, targets, measured, options }),
+  /** Resolves once every file is settled; each one's outcome arrives through `onBatchFile`. */
+  normalizeBatch: (paths: string[], targets: Targets, options: NormalizeOptions) =>
+    invoke<void>("normalize_batch", { paths, targets, options }),
   cancel: () => invoke<void>("cancel_job"),
   onProgress: (handler: (event: ProgressEvent) => void): Promise<UnlistenFn> =>
     listen<ProgressEvent>("job-progress", (e) => handler(e.payload)),
+  onBatchFile: (handler: (event: BatchFileEvent) => void): Promise<UnlistenFn> =>
+    listen<BatchFileEvent>("batch-file", (e) => handler(e.payload)),
 };
 
 export function isCancelled(err: unknown): boolean {

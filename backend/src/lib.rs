@@ -2,6 +2,7 @@ mod engine;
 
 use engine::analyze::{self, AnalysisReport, Assessment, Measurement};
 use engine::av::{self, AudioCache};
+use engine::batch;
 use engine::job::{Cancelled, Job};
 use engine::normalize::{self, NormalizeReport};
 use engine::Targets;
@@ -167,6 +168,40 @@ async fn normalize_file(
     .await
 }
 
+/// Normalizes several files at once (see `engine::batch`). Each file's
+/// outcome arrives as a `batch-file` event, the overall progress as
+/// `job-progress`; the command itself returns once every file is settled.
+#[tauri::command]
+async fn normalize_batch(
+    app: AppHandle,
+    slot: State<'_, Arc<JobSlot>>,
+    paths: Vec<String>,
+    targets: Targets,
+    options: Option<normalize::Options>,
+) -> Result<(), CommandError> {
+    targets.validate()?;
+    let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let options = options.unwrap_or_default();
+    run_job(app.clone(), slot.inner().clone(), move |job| {
+        let files = app.clone();
+        let progress = app;
+        batch::run(
+            &paths,
+            targets,
+            options,
+            job,
+            move |event| {
+                let _ = files.emit("batch-file", event);
+            },
+            move |event| {
+                let _ = progress.emit("job-progress", event);
+            },
+        );
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 fn cancel_job(slot: State<'_, Arc<JobSlot>>) {
     slot.cancel();
@@ -225,6 +260,7 @@ pub fn run() {
             analyze_file,
             assess,
             normalize_file,
+            normalize_batch,
             cancel_job,
             inspect_file
         ])

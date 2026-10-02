@@ -1,0 +1,12 @@
+node_modules
+dist
+backend/target
+backend/gen
+backend/runtime
+tools/lint/node_modules
+graphify-out
+.git
+.claude
+.impeccable
+.token-optimizer
+lcov.info

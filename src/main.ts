@@ -4,7 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
-import { isFinished, overallPercent, summarize, type QueueStatus } from "./batch";
+import { isFinished, settled, summarize, type QueueStatus } from "./batch";
 import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
 import { initTitlebar, type Menu } from "./titlebar";
 import {
@@ -34,10 +34,10 @@ interface QueueItem {
 
 interface State {
   file: FileInfo | null;
-  /** Several files chosen at once: they are normalized one after the other. */
+  /** Several files chosen at once: a few of them are normalized at the same time. */
   queue: QueueItem[];
-  /** Which queue file is running, while a batch is. */
-  batch: { index: number; total: number } | null;
+  /** How many queue files are settled, while a batch runs. */
+  batch: { done: number; total: number } | null;
   /** The user cancelled: the files still waiting are skipped. */
   stopped: boolean;
   analysis: AnalysisReport | null;
@@ -290,10 +290,11 @@ function setProgress(stage: Stage, filePercent: number) {
   const batch = state.batch;
   const stageText = stageLabel(stage);
   const label = batch
-    ? t("batchProgress", { current: batch.index + 1, total: batch.total, stage: stageText })
+    ? t("batchProgress", { done: batch.done, total: batch.total, stage: stageText })
     : stageText;
   ui.progressLabel.textContent = label;
-  const p = Math.max(0, Math.min(100, batch ? overallPercent(batch.index, batch.total, filePercent) : filePercent));
+  // In a batch the backend already reports the progress of the whole queue.
+  const p = Math.max(0, Math.min(100, filePercent));
   state.progress = { stage, percent: filePercent };
   ui.progressPercent.textContent = `${Math.floor(p)}%`;
   ui.progressFill.style.transform = `scaleX(${p / 100})`;
@@ -781,33 +782,29 @@ async function runBatch() {
   state.stopped = false;
   showError(null);
   render();
-  for (const [index, item] of items.entries()) {
-    if (state.stopped) {
-      item.status = "skipped";
-      continue;
-    }
-    item.status = "running";
-    state.batch = { index, total: items.length };
-    setProgress("analyze", 0);
-    renderQueue();
-    try {
-      item.report = await api.normalize(item.file.path, targets(), null, {
+  state.batch = { done: 0, total: items.length };
+  setProgress("analyze", 0);
+  renderQueue();
+  try {
+    await api.normalizeBatch(
+      items.map((item) => item.file.path),
+      targets(),
+      {
         output,
         track: 0,
         allTracks: false,
         leveling: ui.leveling.checked,
         lossless: ui.lossless.checked,
         cleanup: cleanupOptions(),
-      });
-      item.status = "done";
-    } catch (err) {
-      if (isCancelled(err)) {
-        item.status = "skipped";
-        state.stopped = true;
-      } else {
-        item.status = "failed";
-        item.message = errorMessage(err);
-      }
+      },
+    );
+  } catch (err) {
+    showError(errorMessage(err));
+  }
+  // Whatever never reported (cancelled, or the command itself failed) is skipped.
+  for (const item of items) {
+    if (item.status === "waiting" || item.status === "running") {
+      item.status = "skipped";
     }
   }
   state.batch = null;
@@ -1073,6 +1070,32 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     void pickFile();
   }
+});
+
+void api.onBatchFile((event) => {
+  const item = state.queue[event.index];
+  if (!item || !state.batch) {
+    return;
+  }
+  switch (event.status) {
+    case "running":
+      item.status = "running";
+      break;
+    case "done":
+      item.status = "done";
+      item.report = event.report;
+      break;
+    case "failed":
+      item.status = "failed";
+      item.message = errorMessage({ kind: "failed", message: event.message });
+      break;
+    case "skipped":
+      item.status = "skipped";
+      break;
+  }
+  state.batch.done = settled(state.queue.map((queued) => queued.status));
+  renderQueue();
+  setProgress(state.progress?.stage ?? "analyze", state.progress?.percent ?? 0);
 });
 
 void api.onProgress((event) => {

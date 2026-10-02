@@ -57,6 +57,12 @@ impl Job {
         Self { cancel, sink: Arc::new(sink), base: 0.0, scale: 1.0 }
     }
 
+    /// A job with its own progress sink that is cancelled along with this one.
+    /// Used to run several files at once, each reporting separately.
+    pub fn fork(&self, sink: impl Fn(ProgressEvent) + Send + Sync + 'static) -> Job {
+        Job::new(self.cancel.clone(), sink)
+    }
+
     /// A job that fills `span` (a 0..=1 fraction) of this one, starting at
     /// `start`. Used to run several passes under a single progress bar.
     pub fn window(&self, start: f64, span: f64) -> Job {

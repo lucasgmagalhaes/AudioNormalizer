@@ -61,15 +61,16 @@ test("leveling and the result checks are wired end to end", () => {
 
 const runBatch = main.slice(main.indexOf("async function runBatch"), main.indexOf("async function checkForUpdates"));
 
-test("a batch asks once before replacing and then runs the files one after another", () => {
+test("a batch asks once before replacing and then runs the files a few at a time", () => {
   const ask = runBatch.indexOf("await askReplace(");
   const busy = runBatch.indexOf('state.busy = "normalize"');
   assert.ok(ask !== -1 && busy > ask, "the batch must only start after the user approved");
   assert.match(runBatch, /let approved = output === "copy"/, "copies need no confirmation");
-  assert.match(runBatch, /for \(const \[index, item\] of items\.entries\(\)\)/, "files must be processed in order");
-  assert.match(runBatch, /await api\.normalize\(item\.file\.path/, "each file is normalized on its own");
-  assert.match(runBatch, /isCancelled\(err\)[\s\S]*state\.stopped = true/, "cancelling must stop the rest of the queue");
-  assert.match(runBatch, /item\.status = "failed"/, "one failure must not stop the others");
+  assert.match(runBatch, /await api\.normalizeBatch\(\s*items\.map\(\(item\) => item\.file\.path\)/, "the whole queue goes to the backend at once");
+  assert.match(runBatch, /item\.status === "waiting" \|\| item\.status === "running"[\s\S]*item\.status = "skipped"/, "what never reported is skipped");
+  const events = main.slice(main.indexOf("void api.onBatchFile"), main.indexOf("void api.onProgress"));
+  assert.match(events, /case "failed":[\s\S]*item\.status = "failed"/, "one failure must not stop the others");
+  assert.match(events, /case "skipped":/, "cancelled files are shown as skipped");
 });
 
 test("several files can be chosen from the dialog and by dropping", () => {

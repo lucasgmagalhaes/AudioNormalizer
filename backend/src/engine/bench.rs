@@ -177,3 +177,28 @@ fn bench_analyze() {
         );
     }
 }
+
+/// Four copies of BENCH_FILE normalized as a batch; compare with
+/// `bench_pipeline` (one file) times four for the speed-up of parallel files.
+#[test]
+#[ignore]
+fn bench_batch() {
+    let path = env("BENCH_FILE");
+    let source = Path::new(&path);
+    let ext = source.extension().unwrap().to_string_lossy().into_owned();
+    let dir = std::env::temp_dir().join(format!("audio-normalizer-bench-batch-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let copies: Vec<_> = (0..4)
+        .map(|i| {
+            let copy = dir.join(format!("copy{i}.{ext}"));
+            std::fs::copy(source, &copy).unwrap();
+            copy
+        })
+        .collect();
+    let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+    let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+    let t = Instant::now();
+    super::batch::run(&copies, targets, normalize::Options::default(), &job, |_| {}, |_| {});
+    println!("batch of {} files           {:>7.2}s", copies.len(), t.elapsed().as_secs_f64());
+    std::fs::remove_dir_all(dir).unwrap();
+}
