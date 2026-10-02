@@ -17,6 +17,22 @@ SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
 
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\\BrazilianPortuguese.isl"
+Name: "spanish"; MessagesFile: "compiler:Languages\\Spanish.isl"
+
+[CustomMessages]
+english.DesktopIcon=Create a desktop shortcut
+english.AdditionalShortcuts=Additional shortcuts:
+english.LaunchApp=Launch Audio Normalizer
+brazilianportuguese.DesktopIcon=Criar um atalho na área de trabalho
+brazilianportuguese.AdditionalShortcuts=Atalhos adicionais:
+brazilianportuguese.LaunchApp=Iniciar o Audio Normalizer
+spanish.DesktopIcon=Crear un acceso directo en el escritorio
+spanish.AdditionalShortcuts=Accesos directos adicionales:
+spanish.LaunchApp=Iniciar Audio Normalizer
+
 [Files]
 Source: "..\backend\target\release\audio-normalizer.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\backend\runtime\*.dll"; DestDir: "{app}"; Flags: ignoreversion
@@ -26,10 +42,10 @@ Name: "{autoprograms}\Audio Normalizer"; Filename: "{app}\audio-normalizer.exe"
 Name: "{autodesktop}\Audio Normalizer"; Filename: "{app}\audio-normalizer.exe"; Tasks: desktopicon
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
+Name: "desktopicon"; Description: "{cm:DesktopIcon}"; GroupDescription: "{cm:AdditionalShortcuts}"
 
 [Run]
-Filename: "{app}\audio-normalizer.exe"; Description: "Launch Audio Normalizer"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\audio-normalizer.exe"; Description: "{cm:LaunchApp}"; Flags: nowait postinstall skipifsilent
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{app}"
