@@ -87,8 +87,15 @@ pub struct Analysis {
     pub cache: Option<AudioCache>,
 }
 
+/// Analyzes the first audio track.
+#[cfg(test)]
 pub fn run(targets: Targets, input: &Path, job: &Job) -> Result<Analysis> {
-    let info = av::probe(input)?;
+    run_track(targets, 0, input, job)
+}
+
+/// Analyzes the `track`-th audio track (0 = first).
+pub fn run_track(targets: Targets, track: usize, input: &Path, job: &Job) -> Result<Analysis> {
+    let info = av::probe_track(input, track)?;
     let mut progress = job.stage("analyze", 0.0, 100.0);
     let mut decoder = PcmDecoder::open(input, &info, CACHE_LIMIT_BYTES)?;
     let measurement = measure(&mut decoder, &info, job, &mut progress)?;

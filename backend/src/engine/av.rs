@@ -70,6 +70,15 @@ extern "C" {
     fn avb_remuxer_close(mux: *mut AvbRemuxer);
     #[cfg(test)]
     fn avb_ref_loudness(path: *const c_char, out: *mut AvbRefLoudness, err: *mut c_char) -> c_int;
+    #[cfg(test)]
+    fn avb_ref_write_tracks(
+        path: *const c_char,
+        tracks: c_int,
+        amplitudes: *const f64,
+        seconds: f64,
+        sample_rate: c_int,
+        err: *mut c_char,
+    ) -> c_int;
 }
 
 /// Loudness as measured by FFmpeg's own `ebur128` filter (test reference).
@@ -196,7 +205,32 @@ pub fn audio_tracks(path: &Path) -> Result<Vec<AudioTrack>> {
         .collect())
 }
 
+/// Writes a Matroska file with one mono PCM track per amplitude (0..1), each
+/// a sine of its own pitch, through the bridge (test fixture, no ffmpeg).
+#[cfg(test)]
+pub fn write_test_tracks(path: &Path, amplitudes: &[f64], seconds: f64, sample_rate: u32) -> Result<()> {
+    init();
+    let path = c_path(path)?;
+    let mut err = ErrBuf::new();
+    // SAFETY: `amplitudes` holds `tracks` values; valid path and error buffer.
+    let ret = unsafe {
+        avb_ref_write_tracks(
+            path.as_ptr(),
+            amplitudes.len() as c_int,
+            amplitudes.as_ptr(),
+            seconds,
+            sample_rate as c_int,
+            err.ptr(),
+        )
+    };
+    if ret < 0 {
+        return Err(err.error());
+    }
+    Ok(())
+}
+
 /// Media info for the first audio track.
+#[cfg(test)]
 pub fn probe(path: &Path) -> Result<MediaInfo> {
     probe_track(path, 0)
 }

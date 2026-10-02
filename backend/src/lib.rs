@@ -1,7 +1,7 @@
 mod engine;
 
 use engine::analyze::{self, AnalysisReport, Assessment, Measurement};
-use engine::av::AudioCache;
+use engine::av::{self, AudioCache};
 use engine::job::{Cancelled, Job};
 use engine::normalize::{self, NormalizeReport};
 use engine::Targets;
@@ -36,6 +36,8 @@ struct CacheSlot(Mutex<Option<CachedAudio>>);
 
 struct CachedAudio {
     key: FileKey,
+    /// Audio track the recording belongs to.
+    track: usize,
     cache: Arc<AudioCache>,
 }
 
@@ -55,15 +57,17 @@ impl FileKey {
 }
 
 impl CacheSlot {
-    fn store(&self, path: &Path, cache: Option<AudioCache>) {
-        let entry = cache.zip(FileKey::of(path)).map(|(cache, key)| CachedAudio { key, cache: Arc::new(cache) });
+    fn store(&self, path: &Path, track: usize, cache: Option<AudioCache>) {
+        let entry = cache
+            .zip(FileKey::of(path))
+            .map(|(cache, key)| CachedAudio { key, track, cache: Arc::new(cache) });
         *self.0.lock().unwrap() = entry;
     }
 
-    fn take_for(&self, path: &Path) -> Option<Arc<AudioCache>> {
+    fn take_for(&self, path: &Path, track: usize) -> Option<Arc<AudioCache>> {
         let key = FileKey::of(path)?;
         let entry = self.0.lock().unwrap().take()?;
-        (entry.key == key).then_some(entry.cache)
+        (entry.key == key && entry.track == track).then_some(entry.cache)
     }
 }
 
@@ -124,12 +128,14 @@ async fn analyze_file(
     cache: State<'_, CacheSlot>,
     path: String,
     targets: Targets,
+    track: Option<usize>,
 ) -> Result<AnalysisReport, CommandError> {
     targets.validate()?;
     let path = PathBuf::from(path);
     let job_path = path.clone();
-    let analysis = run_job(app, slot.inner().clone(), move |job| analyze::run(targets, &job_path, job)).await?;
-    cache.store(&path, analysis.cache);
+    let track = track.unwrap_or(0);
+    let analysis = run_job(app, slot.inner().clone(), move |job| analyze::run_track(targets, track, &job_path, job)).await?;
+    cache.store(&path, track, analysis.cache);
     Ok(analysis.report)
 }
 
@@ -153,9 +159,10 @@ async fn normalize_file(
     targets.validate()?;
     let path = PathBuf::from(path);
     // Taken, not borrowed: the file is replaced, so the cache is stale after.
-    let audio = measured.and(cache.take_for(&path));
+    let options = options.unwrap_or_default();
+    let audio = measured.and(cache.take_for(&path, options.track));
     run_job(app, slot.inner().clone(), move |job| {
-        normalize::run(targets, options.unwrap_or_default(), &path, measured, audio, job)
+        normalize::run(targets, options, &path, measured, audio, job)
     })
     .await
 }
@@ -172,6 +179,8 @@ struct FileInfo {
     name: String,
     directory: String,
     size: u64,
+    /// Audio tracks in file order; empty when the file could not be read.
+    audio_tracks: Vec<av::AudioTrack>,
 }
 
 #[tauri::command]
@@ -187,6 +196,7 @@ fn inspect_file(path: String) -> Result<FileInfo, CommandError> {
         name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
         directory: p.parent().map(|d| d.display().to_string()).unwrap_or_default(),
         size: meta.len(),
+        audio_tracks: av::audio_tracks(p).unwrap_or_default(),
         path,
     })
 }
@@ -246,9 +256,9 @@ mod tests {
         let slot = CacheSlot::default();
         let path = temporary_path("missing-cache");
 
-        slot.store(&path, None);
+        slot.store(&path, 0, None);
 
-        assert!(slot.take_for(&path).is_none());
+        assert!(slot.take_for(&path, 0).is_none());
         assert!(FileKey::of(&path).is_none());
     }
 

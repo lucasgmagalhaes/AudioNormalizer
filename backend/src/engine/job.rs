@@ -41,16 +41,35 @@ impl std::fmt::Display for StageStopped {
 
 impl std::error::Error for StageStopped {}
 
-type Sink = Box<dyn Fn(ProgressEvent) + Send + Sync>;
+type Sink = Arc<dyn Fn(ProgressEvent) + Send + Sync>;
 
 pub struct Job {
     cancel: Arc<AtomicBool>,
     sink: Sink,
+    /// Where this job sits on the overall bar: its own 0..=100 maps to
+    /// `base..=base + scale * 100`.
+    base: f64,
+    scale: f64,
 }
 
 impl Job {
     pub fn new(cancel: Arc<AtomicBool>, sink: impl Fn(ProgressEvent) + Send + Sync + 'static) -> Self {
-        Self { cancel, sink: Box::new(sink) }
+        Self { cancel, sink: Arc::new(sink), base: 0.0, scale: 1.0 }
+    }
+
+    /// A job that fills `span` (a 0..=1 fraction) of this one, starting at
+    /// `start`. Used to run several passes under a single progress bar.
+    pub fn window(&self, start: f64, span: f64) -> Job {
+        Job {
+            cancel: self.cancel.clone(),
+            sink: self.sink.clone(),
+            base: self.base + start * 100.0 * self.scale,
+            scale: self.scale * span,
+        }
+    }
+
+    fn emit(&self, stage: &'static str, percent: f64) {
+        (self.sink)(ProgressEvent { stage, percent: round(self.base + percent * self.scale) });
     }
 
     pub fn check_cancelled(&self) -> anyhow::Result<()> {
@@ -62,7 +81,7 @@ impl Job {
 
     /// Start a stage that fills `span` percent of the bar starting at `start`.
     pub fn stage(&self, stage: &'static str, start: f64, span: f64) -> Progress<'_> {
-        (self.sink)(ProgressEvent { stage, percent: round(start) });
+        self.emit(stage, round(start));
         Progress {
             job: self,
             stage,
@@ -92,7 +111,7 @@ impl Progress<'_> {
         if moved >= 0.5 || (moved > 0.0 && self.last_emit.elapsed() >= Duration::from_millis(250)) {
             self.last_emit = Instant::now();
             self.last_percent = percent;
-            (self.job.sink)(ProgressEvent { stage: self.stage, percent: round(percent) });
+            self.job.emit(self.stage, round(percent));
         }
     }
 }
@@ -120,6 +139,19 @@ mod tests {
 
         cancel.store(true, Ordering::Relaxed);
         assert_eq!(job.check_cancelled().unwrap_err().to_string(), "processamento cancelado");
+    }
+
+    #[test]
+    fn a_window_maps_a_pass_onto_its_slice_of_the_bar() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&events);
+        let job = Job::new(Arc::new(AtomicBool::new(false)), move |event| captured.lock().unwrap().push(event.percent));
+
+        let second_of_two = job.window(0.5, 0.5);
+        let mut progress = second_of_two.stage("normalize", 0.0, 100.0);
+        progress.update(1.0);
+
+        assert_eq!(*events.lock().unwrap(), [50.0, 100.0]);
     }
 
     #[test]

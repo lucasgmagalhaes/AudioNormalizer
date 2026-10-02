@@ -12,7 +12,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <math.h>
+
+#include <libavcodec/avcodec.h>
 #include <libavfilter/avfilter.h>
+#include <libavformat/avformat.h>
 #include <libavfilter/buffersink.h>
 #include <libavfilter/buffersrc.h>
 #include <libavutil/channel_layout.h>
@@ -175,5 +179,88 @@ done:
     avfilter_graph_free(&graph);
     av_channel_layout_uninit(&layout);
     avb_decoder_close(decoder);
+    return ret < 0 ? ret : 0;
+}
+
+/*
+ * Writes a Matroska file with `tracks` mono PCM audio tracks, each a sine of
+ * its own pitch and the given amplitude (0..1), so tests can build
+ * multi-track media without any external tool. Track `i` is tagged with the
+ * language "eng" (even) or "por" (odd).
+ */
+int avb_ref_write_tracks(const char *path, int tracks, const double *amplitudes, double seconds,
+                         int sample_rate, char *err)
+{
+    enum { CHUNK = 1024 };
+    AVFormatContext *oc = NULL;
+    int ret = avformat_alloc_output_context2(&oc, NULL, "matroska", path);
+    if (ret < 0 || !oc)
+        return ref_fail(err, "não foi possível criar o contêiner de teste", ret);
+
+    for (int i = 0; i < tracks; i++) {
+        AVStream *st = avformat_new_stream(oc, NULL);
+        if (!st) {
+            ret = ref_fail(err, "memória insuficiente", AVERROR(ENOMEM));
+            goto done;
+        }
+        AVCodecParameters *par = st->codecpar;
+        par->codec_type = AVMEDIA_TYPE_AUDIO;
+        par->codec_id = AV_CODEC_ID_PCM_S16LE;
+        par->format = AV_SAMPLE_FMT_S16;
+        par->sample_rate = sample_rate;
+        par->bits_per_coded_sample = 16;
+        par->block_align = 2;
+        par->bit_rate = (int64_t)sample_rate * 16;
+        av_channel_layout_default(&par->ch_layout, 1);
+        st->time_base = (AVRational){1, sample_rate};
+        av_dict_set(&st->metadata, "language", i % 2 ? "por" : "eng", 0);
+    }
+    ret = avio_open(&oc->pb, path, AVIO_FLAG_WRITE);
+    if (ret < 0) {
+        ret = ref_fail(err, "não foi possível criar o arquivo de teste", ret);
+        goto done;
+    }
+    ret = avformat_write_header(oc, NULL);
+    if (ret < 0) {
+        ret = ref_fail(err, "falha ao escrever o cabeçalho de teste", ret);
+        goto done;
+    }
+
+    int64_t total = (int64_t)(seconds * sample_rate);
+    for (int64_t pos = 0; pos < total; pos += CHUNK) {
+        int n = (int)FFMIN(CHUNK, total - pos);
+        for (int i = 0; i < tracks; i++) {
+            AVPacket *pkt = av_packet_alloc();
+            if (!pkt || av_new_packet(pkt, n * 2) < 0) {
+                av_packet_free(&pkt);
+                ret = ref_fail(err, "memória insuficiente", AVERROR(ENOMEM));
+                goto done;
+            }
+            int16_t *out = (int16_t *)pkt->data;
+            double hz = 440.0 * (i + 1);
+            for (int k = 0; k < n; k++) {
+                double v = amplitudes[i] * sin(2.0 * M_PI * hz * (double)(pos + k) / sample_rate);
+                out[k] = (int16_t)lrint(v * 32767.0);
+            }
+            pkt->stream_index = i;
+            pkt->pts = pkt->dts = pos;
+            pkt->duration = n;
+            av_packet_rescale_ts(pkt, (AVRational){1, sample_rate}, oc->streams[i]->time_base);
+            ret = av_interleaved_write_frame(oc, pkt);
+            av_packet_free(&pkt);
+            if (ret < 0) {
+                ret = ref_fail(err, "falha ao escrever o áudio de teste", ret);
+                goto done;
+            }
+        }
+    }
+    ret = av_write_trailer(oc);
+    if (ret < 0)
+        ret = ref_fail(err, "falha ao finalizar o arquivo de teste", ret);
+
+done:
+    if (oc && oc->pb)
+        avio_closep(&oc->pb);
+    avformat_free_context(oc);
     return ret < 0 ? ret : 0;
 }

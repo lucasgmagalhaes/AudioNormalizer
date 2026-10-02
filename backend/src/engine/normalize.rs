@@ -46,6 +46,10 @@ pub enum OutputMode {
 #[serde(rename_all = "camelCase", default)]
 pub struct Options {
     pub output: OutputMode,
+    /// Audio track to normalize, by order among the audio tracks (0 = first).
+    pub track: usize,
+    /// Normalize every audio track instead of just `track`.
+    pub all_tracks: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +59,8 @@ pub struct NormalizeReport {
     /// Where the result was written (the source path when it was replaced).
     pub output_path: String,
     pub replaced: bool,
+    /// How many audio tracks were normalized.
+    pub tracks_processed: usize,
     pub input_lufs: f64,
     pub input_true_peak_db: f64,
     pub output_lufs: f64,
@@ -86,20 +92,100 @@ fn media_details(info: &MediaInfo) -> ProcessedMedia {
     }
 }
 
-/// `measured` and `cache` come from a previous analysis of the same file: the
-/// first skips the measuring pass, the second lets every decode run from
-/// memory so the file itself is read only once (by the remuxer).
+/// `measured` and `cache` come from a previous analysis of the same file and
+/// track: the first skips the measuring pass, the second lets every decode run
+/// from memory so the file itself is read only once (by the remuxer).
+///
+/// With `all_tracks` every audio track is normalized in turn, each pass
+/// reading the previous pass output, and only the last file replaces (or
+/// sits next to) the original.
 pub fn run(
     targets: Targets,
     options: Options,
     input: &Path,
     measured: Option<Measurement>,
-    mut cache: Option<Arc<AudioCache>>,
+    cache: Option<Arc<AudioCache>>,
     job: &Job,
 ) -> Result<NormalizeReport> {
     let started = Instant::now();
-    let info = av::probe(input)?;
     let size_before = fs::metadata(input).context("não foi possível ler o arquivo")?.len();
+    let tracks: Vec<usize> = if options.all_tracks {
+        (0..av::audio_tracks(input)?.len().max(1)).collect()
+    } else {
+        vec![options.track]
+    };
+    let passes = tracks.len() as f64;
+
+    let mut reuse = Some((measured, cache));
+    let mut finished: Vec<TrackPass> = Vec::with_capacity(tracks.len());
+    for (pass, &track) in tracks.iter().enumerate() {
+        // The analysis belongs to one track: only that pass may reuse it.
+        let (measured, cache) = if track == options.track { reuse.take().unwrap_or((None, None)) } else { (None, None) };
+        let window = job.window(pass as f64 / passes, 1.0 / passes);
+        let current: &Path = finished.last().map_or(input, |previous| previous.temp.0.as_path());
+        let done = normalize_track(targets, track, input, current, pass, measured, cache, &window)?;
+        finished.push(done);
+    }
+
+    job.stage("finalize", 99.0, 1.0);
+    job.check_cancelled()?;
+    // The report describes the track the user chose (the first one for "all").
+    let primary = finished.iter().position(|done| done.track == options.track).unwrap_or(0);
+    let tracks_processed = finished.len();
+    let done = &finished[primary];
+    let (measurement, gain_db) = (done.measurement, done.gain_db);
+    let (output_lufs, output_true_peak_db) = (done.encoded.output_lufs, done.encoded.true_peak_db);
+    let limiter_max_reduction_db = done.encoded.limiter_reduction_db;
+    let (input_media, output_media) = (media_details(&done.info), media_details(&done.encoded.media));
+
+    // Only the last pass output survives; earlier ones are deleted on drop.
+    let last = finished.pop().expect("at least one track pass");
+    let output_path = finish_output(last.temp, input, options.output)?;
+
+    Ok(NormalizeReport {
+        path: input.display().to_string(),
+        output_path: output_path.display().to_string(),
+        replaced: options.output == OutputMode::Replace,
+        tracks_processed,
+        input_lufs: measurement.integrated_lufs,
+        input_true_peak_db: measurement.true_peak_db,
+        output_lufs,
+        output_true_peak_db,
+        target_lufs: targets.target_lufs,
+        gain_db,
+        limiter_max_reduction_db,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        size_before,
+        size_after: fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0),
+        input_media,
+        output_media,
+    })
+}
+
+/// What normalizing one audio track produced.
+struct TrackPass {
+    track: usize,
+    temp: TempFile,
+    info: MediaInfo,
+    measurement: Measurement,
+    gain_db: f64,
+    encoded: Encoded,
+}
+
+/// Normalizes `track` of `source`, writing a hidden temporary file next to
+/// `original`. `pass` keeps the temporary names of several passes apart.
+#[allow(clippy::too_many_arguments)]
+fn normalize_track(
+    targets: Targets,
+    track: usize,
+    original: &Path,
+    source_file: &Path,
+    pass: usize,
+    measured: Option<Measurement>,
+    mut cache: Option<Arc<AudioCache>>,
+    job: &Job,
+) -> Result<TrackPass> {
+    let info = av::probe_track(source_file, track)?;
 
     // Progress budget: each decode-only pass counts 1, the encoding pass 2.
     let mut cursor = 0.0;
@@ -108,7 +194,7 @@ pub fn run(
         None => {
             let mut progress = job.stage("analyze", cursor, 30.0);
             cursor += 30.0;
-            let mut decoder = PcmDecoder::open(input, &info, CACHE_LIMIT_BYTES)?;
+            let mut decoder = PcmDecoder::open(source_file, &info, CACHE_LIMIT_BYTES)?;
             let measurement = analyze::measure(&mut decoder, &info, job, &mut progress)?;
             cache = cache.or_else(|| decoder.take_cache().map(Arc::new));
             measurement
@@ -116,7 +202,7 @@ pub fn run(
     };
     let source = match cache {
         Some(cache) => AudioSource::Cache(cache),
-        None => AudioSource::File(input),
+        None => AudioSource::File(source_file),
     };
     let ceiling_db = targets.true_peak_db - LIMITER_MARGIN_DB;
     let mut gain_db = (targets.target_lufs - measurement.integrated_lufs).clamp(-MAX_GAIN_DB, MAX_GAIN_DB);
@@ -129,44 +215,23 @@ pub fn run(
     }
 
     let settings = EncodeSettings { gain_db, ceiling_db, encoder_options: "" };
-    let temp = TempFile(temp_path(input, "normalizing")?);
-    let mut encoded = encode(input, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
+    let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
+    let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
-    // Lossy encoders can overshoot the ceiling. The native AAC encoder's
-    // default coder occasionally does so badly (hard transients right at
-    // the start of the stream); one retry with its simpler coder fixes it.
+    // Lossy encoders can overshoot the ceiling. The native AAC encoder default
+    // coder occasionally does so badly (hard transients right at the start of
+    // the stream); one retry with its simpler coder fixes it.
     if encoded.true_peak_db > targets.true_peak_db + PEAK_TOLERANCE_DB && encoded.encoder == "aac" {
-        let retry = TempFile(temp_path(input, "normalizing-retry")?);
+        let retry = TempFile(temp_path(original, &format!("normalizing-{pass}-retry"))?);
         let settings = EncodeSettings { encoder_options: "aac_coder=fast", ..settings };
-        let second = encode(input, &source, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
+        let second = encode(source_file, &source, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
         if second.true_peak_db < encoded.true_peak_db {
             fs::rename(&retry.0, &temp.0).context("falha ao preparar o arquivo final")?;
             std::mem::forget(retry);
             encoded = second;
         }
     }
-
-    job.stage("finalize", 99.0, 1.0);
-    job.check_cancelled()?;
-    let output_path = finish_output(temp, input, options.output)?;
-
-    Ok(NormalizeReport {
-        path: input.display().to_string(),
-        output_path: output_path.display().to_string(),
-        replaced: options.output == OutputMode::Replace,
-        input_lufs: measurement.integrated_lufs,
-        input_true_peak_db: measurement.true_peak_db,
-        output_lufs: encoded.output_lufs,
-        output_true_peak_db: encoded.true_peak_db,
-        target_lufs: targets.target_lufs,
-        gain_db,
-        limiter_max_reduction_db: encoded.limiter_reduction_db,
-        elapsed_seconds: started.elapsed().as_secs_f64(),
-        size_before,
-        size_after: fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0),
-        input_media: media_details(&info),
-        output_media: media_details(&encoded.media),
-    })
+    Ok(TrackPass { track, temp, info, measurement, gain_db, encoded })
 }
 
 #[derive(Clone, Copy)]
@@ -457,7 +522,8 @@ fn interpolate_gain(gains: &[f64], loudness: &[f64], target: f64) -> f64 {
 
 /// Sanity-check the new file before it replaces the original.
 fn verify(output: &Path, original: &MediaInfo) -> Result<MediaInfo> {
-    let written = av::probe(output).context("o arquivo gerado não pôde ser lido; o original foi mantido")?;
+    let written = av::probe_track(output, original.track)
+        .context("o arquivo gerado não pôde ser lido; o original foi mantido")?;
     if original.has_video && !written.has_video {
         bail!("o vídeo não foi copiado corretamente; o original foi mantido");
     }
@@ -653,6 +719,71 @@ mod tests {
         fs::remove_file(path).unwrap();
     }
 
+    /// Loudness of one audio track of `path`.
+    fn track_lufs(path: &Path, track: usize) -> f64 {
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        analyze::run_track(targets, track, path, &job).unwrap().report.measurement.integrated_lufs
+    }
+
+    #[test]
+    fn lists_audio_tracks_with_their_metadata() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-list-{}.mkv", std::process::id()));
+        av::write_test_tracks(&path, &[0.1, 0.05, 0.2], 1.0, 48_000).unwrap();
+
+        let tracks = av::audio_tracks(&path).unwrap();
+
+        assert_eq!(tracks.len(), 3);
+        assert_eq!(tracks[1].index, 1);
+        assert_eq!((tracks[0].language.as_str(), tracks[1].language.as_str()), ("eng", "por"));
+        assert!(tracks.iter().all(|t| t.channels == 1 && t.sample_rate == 48_000));
+        assert!(av::probe_track(&path, 3).is_err(), "a missing track must be an error");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn normalizes_only_the_chosen_audio_track() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-pick-{}.mkv", std::process::id()));
+        av::write_test_tracks(&path, &[0.05, 0.02], 8.0, 48_000).unwrap();
+        let (first, second) = (track_lufs(&path, 0), track_lufs(&path, 1));
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+
+        let options = Options { track: 1, ..Options::default() };
+        let report = run(targets, options, &path, None, None, &job).unwrap();
+
+        assert_eq!(report.tracks_processed, 1);
+        assert!((track_lufs(&path, 1) - targets.target_lufs).abs() < 1.0, "the chosen track reaches the target");
+        assert!((track_lufs(&path, 0) - first).abs() < 0.3, "the other track is left alone");
+        assert!(second < targets.target_lufs - 5.0, "the fixture is quiet enough to need gain");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn normalizes_every_audio_track_when_asked() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-all-{}.mkv", std::process::id()));
+        av::write_test_tracks(&path, &[0.05, 0.02, 0.1], 8.0, 48_000).unwrap();
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+
+        let options = Options { all_tracks: true, ..Options::default() };
+        let report = run(targets, options, &path, None, None, &job).unwrap();
+
+        assert_eq!(report.tracks_processed, 3);
+        for track in 0..3 {
+            assert!((track_lufs(&path, track) - targets.target_lufs).abs() < 1.0, "track {track}");
+        }
+        assert_eq!(av::audio_tracks(&path).unwrap().len(), 3, "no track may be lost");
+        let leftovers = fs::read_dir(std::env::temp_dir())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".") && name.contains("audio-normalizer-all"))
+            .count();
+        assert_eq!(leftovers, 0, "temporary pass files must be cleaned up");
+        fs::remove_file(path).unwrap();
+    }
+
     #[test]
     fn copy_paths_are_numbered_and_never_overwrite() {
         let dir = std::env::temp_dir().join(format!("audio-normalizer-copies-{}", std::process::id()));
@@ -672,7 +803,7 @@ mod tests {
         let original = fs::read(&path).unwrap();
         let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
         let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let options = Options { output: OutputMode::Copy };
+        let options = Options { output: OutputMode::Copy, ..Options::default() };
 
         let first = run(targets, options, &path, None, None, &job).unwrap();
         let second = run(targets, options, &path, None, None, &job).unwrap();
