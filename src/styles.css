@@ -91,12 +91,66 @@ svg {
 }
 
 .app {
-  max-width: 760px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 28px 24px 32px;
+  padding: 20px 24px 28px;
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+/* One column: the file and its results, then the settings, in that reading order. */
+.stage {
+  display: contents;
+}
+
+.stage > * {
+  order: 3;
+}
+
+.stage > #drop,
+.stage > #queue {
+  order: 1;
+}
+
+.panel {
+  order: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+/* Wide window: results on the left, controls on the right and always in reach. */
+@media (min-width: 880px) {
+  .app {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 400px;
+    gap: 20px;
+    align-items: start;
+  }
+
+  .stage {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    min-width: 0;
+  }
+
+  .stage > * {
+    order: 0;
+  }
+
+  .panel {
+    order: 0;
+    position: sticky;
+    top: 20px;
+    max-height: calc(100vh - 36px - 40px);
+    overflow-y: auto;
+  }
 }
 
 /* window frame: our own title bar replaces the operating system's */
@@ -351,7 +405,6 @@ body {
 .update-progress::-webkit-progress-value {
   background: var(--accent);
   border-radius: 3px;
-  transition: width 0.2s ease;
 }
 
 .update-progress:indeterminate {
@@ -375,33 +428,15 @@ body {
 }
 
 /* header */
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.brand-mark {
-  width: 40px;
-  height: 40px;
-  flex: none;
-}
-
-.brand h1 {
-  font-size: 20px;
-}
-
-.brand p {
-  margin: 0;
-  color: var(--muted);
-}
-
 /* drop zone */
 .drop {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
   padding: 28px 20px;
+  min-height: 320px;
+  display: grid;
+  place-items: center;
   text-align: center;
   cursor: pointer;
   transition: border-color 0.15s, background 0.15s, transform 0.15s;
@@ -431,7 +466,8 @@ body {
 }
 
 .drop.has-file {
-  border-style: solid;
+  min-height: 0;
+  display: block;
   padding: 16px 18px;
   text-align: left;
 }
@@ -495,9 +531,38 @@ body {
 
 /* settings */
 .settings {
-  display: grid;
-  grid-template-columns: 1.4fr 1fr;
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 12px 0 0;
+  min-width: 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.options legend {
+  float: left;
+  width: 100%;
+  margin: 0 0 4px;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.options legend + * {
+  clear: both;
+}
+
+.options .field-check {
+  padding: 2px 0 6px;
 }
 
 .field {
@@ -954,7 +1019,6 @@ select:focus-visible {
 }
 
 @media (max-width: 640px) {
-  .settings,
   .metrics,
   .result .metrics {
     grid-template-columns: 1fr 1fr;
@@ -966,11 +1030,6 @@ select:focus-visible {
     padding: 20px 16px 28px;
   }
 
-  .brand {
-    align-items: flex-start;
-  }
-
-  .settings,
   .metrics,
   .result .metrics {
     grid-template-columns: 1fr;
@@ -1141,9 +1200,9 @@ select:focus-visible {
 }
 
 .streams {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -1151,10 +1210,11 @@ select:focus-visible {
 
 .stream {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 10px 12px;
-  border-radius: 10px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
   background: var(--surface-2);
   color: var(--muted);
 }
@@ -1265,7 +1325,6 @@ select:focus-visible {
 }
 
 @media (max-width: 440px) {
-  .streams,
   .dialog-metrics {
     grid-template-columns: 1fr;
   }

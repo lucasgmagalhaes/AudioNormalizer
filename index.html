@@ -28,50 +28,137 @@
     </div>
     <div id="viewport" class="viewport" inert>
     <main class="app">
-      <header class="app-header">
-        <div class="brand">
-          <img class="brand-mark" src="/logo.svg" alt="" />
-          <div>
-            <h1>Audio Normalizer</h1>
-            <p data-i18n="tagline">Deixa o volume dos seus vídeos no nível certo para cada plataforma.</p>
+      <div class="stage">
+        <section id="drop" class="drop" tabindex="0" role="button" data-i18n-aria-label="selectVideo" aria-label="Selecionar vídeo">
+          <div class="drop-empty">
+            <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />
+            </svg>
+            <p class="drop-title" data-i18n="dropTitle">Arraste um vídeo para cá</p>
+            <p class="drop-sub" data-i18n="dropSub">ou clique para selecionar — MP4, MKV, MOV, WEBM, AVI…</p>
           </div>
-        </div>
-      </header>
-
-      <section id="drop" class="drop" tabindex="0" role="button" data-i18n-aria-label="selectVideo" aria-label="Selecionar vídeo">
-        <div class="drop-empty">
-          <svg class="drop-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4" />
-          </svg>
-          <p class="drop-title" data-i18n="dropTitle">Arraste um vídeo para cá</p>
-          <p class="drop-sub" data-i18n="dropSub">ou clique para selecionar — MP4, MKV, MOV, WEBM, AVI…</p>
-        </div>
-        <div class="drop-file" hidden>
-          <svg class="file-icon" viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="3" y="5" width="18" height="14" rx="2" />
-            <path d="m10 9 5 3-5 3z" />
-          </svg>
-          <div class="file-meta">
-            <p id="file-name" class="file-name"></p>
-            <p id="file-detail" class="file-detail"></p>
+          <div class="drop-file" hidden>
+            <svg class="file-icon" viewBox="0 0 24 24" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="14" rx="2" />
+              <path d="m10 9 5 3-5 3z" />
+            </svg>
+            <div class="file-meta">
+              <p id="file-name" class="file-name"></p>
+              <p id="file-detail" class="file-detail"></p>
+            </div>
+            <span class="file-change link" data-i18n="change">Trocar</span>
           </div>
-          <span class="file-change link" data-i18n="change">Trocar</span>
-        </div>
-      </section>
+        </section>
 
-      <section id="queue" class="card" hidden>
-        <div class="queue-head">
-          <h2 data-i18n="queueTitle">Fila de arquivos</h2>
-          <p id="queue-summary" class="muted" aria-live="polite"></p>
-        </div>
-        <ol id="queue-list" class="queue"></ol>
-        <p class="field-hint" data-i18n="queueHint">Cada arquivo usa a primeira faixa de áudio e as configurações abaixo.</p>
-        <div class="result-actions">
-          <button id="queue-again" class="btn btn-secondary" type="button" hidden data-i18n="again">Normalizar outro</button>
-        </div>
-      </section>
+        <section id="queue" class="card" hidden>
+          <div class="queue-head">
+            <h2 data-i18n="queueTitle">Fila de arquivos</h2>
+            <p id="queue-summary" class="muted" aria-live="polite"></p>
+          </div>
+          <ol id="queue-list" class="queue"></ol>
+          <p class="field-hint" data-i18n="queueHint">Cada arquivo usa a primeira faixa de áudio e as mesmas configurações.</p>
+          <div class="result-actions">
+            <button id="queue-again" class="btn btn-secondary" type="button" hidden data-i18n="again">Normalizar outro</button>
+          </div>
+        </section>
 
-      <section class="settings" data-i18n-aria-label="settings" aria-label="Configurações">
+        <section id="analysis" class="card" hidden>
+          <div class="verdict">
+            <div>
+              <p class="eyebrow" data-i18n="preAnalysis">Pré-análise</p>
+              <h2 id="verdict-title"></h2>
+              <p id="verdict-text" class="muted"></p>
+              <p id="m-audio" class="muted file-detail"></p>
+            </div>
+            <div class="potential">
+              <span id="gain-value" class="potential-value num"></span>
+              <span class="potential-label" data-i18n="gain">Ajuste de ganho</span>
+            </div>
+          </div>
+
+          <div class="scale" aria-hidden="true">
+            <div class="scale-track"></div>
+            <div id="scale-target" class="scale-target"><span data-i18n="scaleTarget">alvo</span></div>
+            <div id="scale-current" class="scale-current"><span data-i18n="scaleCurrent">atual</span></div>
+            <div class="scale-labels"><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 LUFS</span></div>
+          </div>
+
+          <dl class="metrics">
+            <div><dt data-i18n="current" data-i18n-title="hintLoudness" title="">Loudness atual</dt><dd id="m-current" class="num"></dd></div>
+            <div><dt data-i18n="targetShort">Alvo</dt><dd id="m-target" class="num"></dd></div>
+            <div><dt data-i18n="peak" data-i18n-title="hintPeak" title="">Pico (true peak)</dt><dd id="m-peak" class="num"></dd></div>
+            <div><dt data-i18n="range" data-i18n-title="hintRange" title="">Faixa dinâmica (LRA)</dt><dd id="m-lra" class="num"></dd></div>
+          </dl>
+          <ul id="notes" class="notes"></ul>
+        </section>
+
+        <section id="progress" class="card progress" hidden aria-live="polite">
+          <div class="progress-head">
+            <span id="progress-label" data-i18n="progressInitial">Processando…</span>
+            <span id="progress-percent" class="num">0%</span>
+          </div>
+          <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="progress-fill" class="bar-fill"></div>
+          </div>
+        </section>
+
+        <p id="error" class="alert" role="alert" hidden>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5m0 3h.01" /></svg>
+          <span id="error-text"></span>
+        </p>
+
+        <section id="result" class="card result" hidden>
+          <div class="result-head">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></svg>
+            <div>
+              <h2 data-i18n="complete">Normalização concluída</h2>
+              <p id="result-sub" class="muted"></p>
+            </div>
+          </div>
+          <div class="before-after">
+            <div><span class="eyebrow" data-i18n="before">Antes</span><span id="r-before" class="big num"></span></div>
+            <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-5-5 5 5-5 5" /></svg>
+            <div><span class="eyebrow" data-i18n="after">Depois</span><span id="r-after" class="big num accent"></span></div>
+          </div>
+          <p id="result-verdict" class="result-verdict"></p>
+          <ul id="result-checks" class="checks"></ul>
+
+          <details class="details">
+            <summary data-i18n="details">Detalhes</summary>
+            <div class="result-chart" data-i18n-aria-label="chartLabel" aria-label="Comparação do processamento">
+              <p class="chart-legend muted">
+                <span class="legend-swatch chart-before" aria-hidden="true"></span><span data-i18n="before">Antes</span>
+                <span class="legend-swatch chart-after" aria-hidden="true"></span><span data-i18n="after">Depois</span>
+              </p>
+              <div class="chart-row"><span data-i18n="loudness">Loudness</span><div class="chart-track"><i id="chart-loudness-before" class="chart-before"></i><i id="chart-loudness-after" class="chart-after"></i></div><span id="chart-loudness" class="num"></span></div>
+              <div class="chart-row"><span data-i18n="truePeak">True peak</span><div class="chart-track"><i id="chart-peak-before" class="chart-before"></i><i id="chart-peak-after" class="chart-after"></i></div><span id="chart-peak" class="num"></span></div>
+            </div>
+            <dl class="metrics">
+              <div><dt data-i18n="appliedGain">Ganho aplicado</dt><dd id="r-gain" class="num"></dd></div>
+              <div><dt data-i18n="finalPeak">Pico final</dt><dd id="r-peak" class="num"></dd></div>
+              <div><dt data-i18n="limiter">Limitador</dt><dd id="r-limiter" class="num"></dd></div>
+              <div><dt data-i18n="size">Tamanho</dt><dd id="r-size" class="num"></dd></div>
+            </dl>
+            <dl class="file-diff">
+              <div><dt data-i18n="format">Formato</dt><dd id="r-codec"></dd></div>
+              <div><dt data-i18n="audio">Áudio</dt><dd id="r-audio"></dd></div>
+              <div><dt data-i18n="duration">Duração</dt><dd id="r-duration" class="num"></dd></div>
+              <div><dt data-i18n="video">Vídeo</dt><dd id="r-video"></dd></div>
+              <div><dt data-i18n="range">Faixa dinâmica (LRA)</dt><dd id="r-range" class="num"></dd></div>
+              <div><dt data-i18n="maxShortTerm">Máx. curto prazo (3 s)</dt><dd id="r-short" class="num"></dd></div>
+              <div><dt data-i18n="maxMomentary">Máx. momentâneo (400 ms)</dt><dd id="r-momentary" class="num"></dd></div>
+            </dl>
+          </details>
+
+          <div class="result-actions">
+            <button id="copy-report" class="btn btn-secondary" type="button" data-i18n="copyReport">Copiar relatório</button>
+            <button id="again" class="btn btn-secondary" type="button" data-i18n="again">Normalizar outro</button>
+          </div>
+        </section>
+      </div>
+
+      <aside class="panel">
+        <section class="settings" data-i18n-aria-label="settings" aria-label="Configurações">
         <label class="field">
           <span data-i18n="target">Alvo de loudness</span>
           <select id="target">
@@ -95,28 +182,31 @@
           </select>
           <small class="field-hint" data-i18n="ceilingHint">Limite para os picos de volume, para não distorcer ao tocar.</small>
         </label>
-        <label class="field field-wide field-check">
+          <fieldset class="options">
+            <legend data-i18n="audioOptions">Melhorias opcionais</legend>
+        <label class="field field-check">
           <span class="check-row"><input id="leveling" type="checkbox" /><span data-i18n="leveling">Nivelar a dinâmica (fala)</span></span>
           <small class="field-hint" data-i18n="levelingHint">Aproxima os trechos baixos e altos antes de ajustar o volume. Bom para fala; evite em música.</small>
         </label>
-        <label class="field field-wide field-check">
+        <label class="field field-check">
           <span class="check-row"><input id="highpass" type="checkbox" /><span data-i18n="highpass">Remover grave inaudível e DC offset</span></span>
           <small class="field-hint" data-i18n="highpassHint">Filtra o ronco abaixo de 20 Hz, que não se ouve mas consome volume. O vídeo e a duração não mudam.</small>
         </label>
-        <label class="field field-wide field-check">
+        <label class="field field-check">
           <span class="check-row"><input id="declip" type="checkbox" /><span data-i18n="declip">Reconstruir picos cortados (clipping)</span></span>
           <small class="field-hint" data-i18n="declipHint">Redesenha os topos achatados da onda. Ajuda em gravações estouradas, mas não é perfeito.</small>
         </label>
-        <label class="field field-wide field-check">
+        <label class="field field-check">
           <span class="check-row"><input id="lossless" type="checkbox" /><span data-i18n="lossless">Evitar nova perda de qualidade (áudio em FLAC)</span></span>
           <small class="field-hint" data-i18n="losslessHint">Não comprime o áudio de novo, mas o arquivo fica maior. Só vale quando o formato aceita FLAC, como MKV.</small>
         </label>
-        <label id="track-field" class="field field-wide" hidden>
+          </fieldset>
+        <label id="track-field" class="field" hidden>
           <span data-i18n="track">Faixa de áudio</span>
           <select id="track"></select>
           <small class="field-hint" data-i18n="trackHint">Este arquivo tem mais de uma faixa de áudio. As outras são copiadas sem mudança.</small>
         </label>
-        <label class="field field-wide">
+        <label class="field">
           <span data-i18n="output">Resultado</span>
           <select id="output">
             <option value="replace" selected data-i18n="outputReplace">Substituir o original</option>
@@ -124,37 +214,7 @@
           </select>
           <small class="field-hint" data-i18n="outputHint">A cópia fica na mesma pasta como "nome (normalized)" e o original não muda.</small>
         </label>
-      </section>
-
-      <section id="analysis" class="card" hidden>
-        <div class="verdict">
-          <div>
-            <p class="eyebrow" data-i18n="preAnalysis">Pré-análise</p>
-            <h2 id="verdict-title"></h2>
-            <p id="verdict-text" class="muted"></p>
-            <p id="m-audio" class="muted file-detail"></p>
-          </div>
-          <div class="potential">
-            <span id="gain-value" class="potential-value num"></span>
-            <span class="potential-label" data-i18n="gain">Ajuste de ganho</span>
-          </div>
-        </div>
-
-        <div class="scale" aria-hidden="true">
-          <div class="scale-track"></div>
-          <div id="scale-target" class="scale-target"><span data-i18n="scaleTarget">alvo</span></div>
-          <div id="scale-current" class="scale-current"><span data-i18n="scaleCurrent">atual</span></div>
-          <div class="scale-labels"><span>-40</span><span>-30</span><span>-20</span><span>-10</span><span>0 LUFS</span></div>
-        </div>
-
-        <dl class="metrics">
-          <div><dt data-i18n="current" data-i18n-title="hintLoudness" title="">Loudness atual</dt><dd id="m-current" class="num"></dd></div>
-          <div><dt data-i18n="targetShort">Alvo</dt><dd id="m-target" class="num"></dd></div>
-          <div><dt data-i18n="peak" data-i18n-title="hintPeak" title="">Pico (true peak)</dt><dd id="m-peak" class="num"></dd></div>
-          <div><dt data-i18n="range" data-i18n-title="hintRange" title="">Faixa dinâmica (LRA)</dt><dd id="m-lra" class="num"></dd></div>
-        </dl>
-        <ul id="notes" class="notes"></ul>
-      </section>
+        </section>
 
       <div class="actions">
         <button id="analyze" class="btn btn-secondary" disabled>
@@ -167,6 +227,8 @@
         </button>
         <button id="cancel" class="btn btn-ghost" hidden data-i18n="cancel">Cancelar</button>
       </div>
+      <p id="action-hint" class="hint muted" data-i18n="hintPickVideo">Escolha um vídeo para começar.</p>
+
       <p id="action-hint" class="hint muted" data-i18n="hintPickVideo">Escolha um vídeo para começar.</p>
 
       <section class="safety" aria-labelledby="safety-title">
@@ -187,70 +249,7 @@
         </ul>
         <p class="safety-note muted" data-i18n="safetyNote">O original só é trocado depois que o arquivo novo é verificado. Se algo falhar ou você cancelar, ele continua intacto.</p>
       </section>
-
-      <section id="progress" class="card progress" hidden aria-live="polite">
-        <div class="progress-head">
-          <span id="progress-label" data-i18n="progressInitial">Processando…</span>
-          <span id="progress-percent" class="num">0%</span>
-        </div>
-        <div class="bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          <div id="progress-fill" class="bar-fill"></div>
-        </div>
-      </section>
-
-      <p id="error" class="alert" role="alert" hidden>
-        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="M12 8v5m0 3h.01" /></svg>
-        <span id="error-text"></span>
-      </p>
-
-      <section id="result" class="card result" hidden>
-        <div class="result-head">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /><path d="m8 12 3 3 5-6" /></svg>
-          <div>
-            <h2 data-i18n="complete">Normalização concluída</h2>
-            <p id="result-sub" class="muted"></p>
-          </div>
-        </div>
-        <div class="before-after">
-          <div><span class="eyebrow" data-i18n="before">Antes</span><span id="r-before" class="big num"></span></div>
-          <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-5-5 5 5-5 5" /></svg>
-          <div><span class="eyebrow" data-i18n="after">Depois</span><span id="r-after" class="big num accent"></span></div>
-        </div>
-        <p id="result-verdict" class="result-verdict"></p>
-        <ul id="result-checks" class="checks"></ul>
-
-        <details class="details">
-          <summary data-i18n="details">Detalhes</summary>
-          <div class="result-chart" data-i18n-aria-label="chartLabel" aria-label="Comparação do processamento">
-            <p class="chart-legend muted">
-              <span class="legend-swatch chart-before" aria-hidden="true"></span><span data-i18n="before">Antes</span>
-              <span class="legend-swatch chart-after" aria-hidden="true"></span><span data-i18n="after">Depois</span>
-            </p>
-            <div class="chart-row"><span data-i18n="loudness">Loudness</span><div class="chart-track"><i id="chart-loudness-before" class="chart-before"></i><i id="chart-loudness-after" class="chart-after"></i></div><span id="chart-loudness" class="num"></span></div>
-            <div class="chart-row"><span data-i18n="truePeak">True peak</span><div class="chart-track"><i id="chart-peak-before" class="chart-before"></i><i id="chart-peak-after" class="chart-after"></i></div><span id="chart-peak" class="num"></span></div>
-          </div>
-          <dl class="metrics">
-            <div><dt data-i18n="appliedGain">Ganho aplicado</dt><dd id="r-gain" class="num"></dd></div>
-            <div><dt data-i18n="finalPeak">Pico final</dt><dd id="r-peak" class="num"></dd></div>
-            <div><dt data-i18n="limiter">Limitador</dt><dd id="r-limiter" class="num"></dd></div>
-            <div><dt data-i18n="size">Tamanho</dt><dd id="r-size" class="num"></dd></div>
-          </dl>
-          <dl class="file-diff">
-            <div><dt data-i18n="format">Formato</dt><dd id="r-codec"></dd></div>
-            <div><dt data-i18n="audio">Áudio</dt><dd id="r-audio"></dd></div>
-            <div><dt data-i18n="duration">Duração</dt><dd id="r-duration" class="num"></dd></div>
-            <div><dt data-i18n="video">Vídeo</dt><dd id="r-video"></dd></div>
-            <div><dt data-i18n="range">Faixa dinâmica (LRA)</dt><dd id="r-range" class="num"></dd></div>
-            <div><dt data-i18n="maxShortTerm">Máx. curto prazo (3 s)</dt><dd id="r-short" class="num"></dd></div>
-            <div><dt data-i18n="maxMomentary">Máx. momentâneo (400 ms)</dt><dd id="r-momentary" class="num"></dd></div>
-          </dl>
-        </details>
-
-        <div class="result-actions">
-          <button id="copy-report" class="btn btn-secondary" type="button" data-i18n="copyReport">Copiar relatório</button>
-          <button id="again" class="btn btn-secondary" type="button" data-i18n="again">Normalizar outro</button>
-        </div>
-      </section>
+      </aside>
     </main>
     </div>
 
