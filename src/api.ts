@@ -52,8 +52,16 @@ export interface AnalysisReport {
   assessment: Assessment;
 }
 
+export type OutputMode = "replace" | "copy";
+
+export interface NormalizeOptions {
+  output: OutputMode;
+}
+
 export interface NormalizeReport {
   path: string;
+  outputPath: string;
+  replaced: boolean;
   inputLufs: number;
   inputTruePeakDb: number;
   outputLufs: number;
@@ -86,8 +94,8 @@ export const api = {
     invoke<AnalysisReport>("analyze_file", { path, targets }),
   assess: (measurement: Measurement, targets: Targets) =>
     invoke<Assessment>("assess", { measurement, targets }),
-  normalize: (path: string, targets: Targets, measured: Measurement | null) =>
-    invoke<NormalizeReport>("normalize_file", { path, targets, measured }),
+  normalize: (path: string, targets: Targets, measured: Measurement | null, options: NormalizeOptions) =>
+    invoke<NormalizeReport>("normalize_file", { path, targets, measured, options }),
   cancel: () => invoke<void>("cancel_job"),
   onProgress: (handler: (event: ProgressEvent) => void): Promise<UnlistenFn> =>
     listen<ProgressEvent>("job-progress", (e) => handler(e.payload)),

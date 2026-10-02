@@ -68,6 +68,14 @@
           </select>
           <small class="field-hint" data-i18n="ceilingHint">Limite para os picos de volume, para não distorcer ao tocar.</small>
         </label>
+        <label class="field field-wide">
+          <span data-i18n="output">Resultado</span>
+          <select id="output">
+            <option value="replace" selected data-i18n="outputReplace">Substituir o original</option>
+            <option value="copy" data-i18n="outputCopy">Salvar uma cópia ao lado do original</option>
+          </select>
+          <small class="field-hint" data-i18n="outputHint">A cópia fica na mesma pasta como "nome (normalized)" e o original não muda.</small>
+        </label>
       </section>
 
       <section id="analysis" class="card" hidden>
@@ -107,7 +115,7 @@
         </button>
         <button id="normalize" class="btn btn-primary" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l3-7 4 14 3-7h5" /></svg>
-          <span data-i18n="normalizeReplace">Normalizar e substituir</span>
+          <span id="normalize-label">Normalizar e substituir</span>
         </button>
         <button id="cancel" class="btn btn-ghost" hidden data-i18n="cancel">Cancelar</button>
       </div>

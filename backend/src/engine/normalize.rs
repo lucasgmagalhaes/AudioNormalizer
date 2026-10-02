@@ -3,7 +3,7 @@
 
 use anyhow::{bail, Context, Result};
 use ebur128::{EbuR128, Mode};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::sync_channel;
@@ -30,10 +30,31 @@ const CALIBRATION_STEPS_DB: [f64; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
 /// Encoded true peak allowed above the ceiling before re-encoding.
 const PEAK_TOLERANCE_DB: f64 = 0.5;
 
+/// What happens to the original file once the new one is verified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OutputMode {
+    /// Swap the verified file in place of the original.
+    #[default]
+    Replace,
+    /// Keep the original and save the result next to it as "name (normalized).ext".
+    Copy,
+}
+
+/// User choices that shape a normalization beyond the loudness targets.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Options {
+    pub output: OutputMode,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizeReport {
     pub path: String,
+    /// Where the result was written (the source path when it was replaced).
+    pub output_path: String,
+    pub replaced: bool,
     pub input_lufs: f64,
     pub input_true_peak_db: f64,
     pub output_lufs: f64,
@@ -70,6 +91,7 @@ fn media_details(info: &MediaInfo) -> ProcessedMedia {
 /// memory so the file itself is read only once (by the remuxer).
 pub fn run(
     targets: Targets,
+    options: Options,
     input: &Path,
     measured: Option<Measurement>,
     mut cache: Option<Arc<AudioCache>>,
@@ -126,10 +148,12 @@ pub fn run(
 
     job.stage("finalize", 99.0, 1.0);
     job.check_cancelled()?;
-    replace_original(temp, input)?;
+    let output_path = finish_output(temp, input, options.output)?;
 
     Ok(NormalizeReport {
         path: input.display().to_string(),
+        output_path: output_path.display().to_string(),
+        replaced: options.output == OutputMode::Replace,
         input_lufs: measurement.integrated_lufs,
         input_true_peak_db: measurement.true_peak_db,
         output_lufs: encoded.output_lufs,
@@ -139,7 +163,7 @@ pub fn run(
         limiter_max_reduction_db: encoded.limiter_reduction_db,
         elapsed_seconds: started.elapsed().as_secs_f64(),
         size_before,
-        size_after: fs::metadata(input).map(|m| m.len()).unwrap_or(0),
+        size_after: fs::metadata(&output_path).map(|m| m.len()).unwrap_or(0),
         input_media: media_details(&info),
         output_media: media_details(&encoded.media),
     })
@@ -463,6 +487,44 @@ fn temp_path(input: &Path, tag: &str) -> Result<PathBuf> {
     Ok(dir.join(format!(".{stem}.{tag}.{ext}")))
 }
 
+/// Puts the verified temporary file where the user asked for it and returns
+/// its final path.
+fn finish_output(temp: TempFile, input: &Path, mode: OutputMode) -> Result<PathBuf> {
+    match mode {
+        OutputMode::Replace => {
+            replace_original(temp, input)?;
+            Ok(input.to_path_buf())
+        }
+        OutputMode::Copy => {
+            let target = copy_path(input)?;
+            fs::rename(&temp.0, &target).context("não foi possível salvar a cópia normalizada")?;
+            std::mem::forget(temp);
+            Ok(target)
+        }
+    }
+}
+
+/// "clip.mp4" -> "clip (normalized).mp4", then "(normalized 2)" and so on:
+/// an existing file is never overwritten.
+fn copy_path(input: &Path) -> Result<PathBuf> {
+    let Some(ext) = input.extension().map(|e| e.to_string_lossy().into_owned()) else {
+        bail!("o arquivo precisa ter extensão (ex.: .mp4) para identificar o formato");
+    };
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "video".into());
+    let dir = input.parent().unwrap_or_else(|| Path::new("."));
+    for n in 1..1000 {
+        let tag = if n == 1 { "normalized".to_string() } else { format!("normalized {n}") };
+        let candidate = dir.join(format!("{stem} ({tag}).{ext}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    bail!("já existem cópias normalizadas demais ao lado do arquivo original")
+}
+
 fn replace_original(temp: TempFile, input: &Path) -> Result<()> {
     // std::fs::rename replaces the destination atomically on the same
     // volume (MoveFileExW with MOVEFILE_REPLACE_EXISTING on Windows).
@@ -546,7 +608,7 @@ mod tests {
         let cache = analysis.cache.map(Arc::new).unwrap();
         assert!(cache.bytes() > 0);
         let before = analysis.report;
-        let report = run(targets, &path, Some(before.measurement), Some(cache), &job).unwrap();
+        let report = run(targets, Options::default(), &path, Some(before.measurement), Some(cache), &job).unwrap();
         let after = analyze::run(targets, &path, &job).unwrap().report;
         assert!((after.measurement.integrated_lufs - before.assessment.expected_lufs).abs() < 1.0);
         assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5);
@@ -565,7 +627,7 @@ mod tests {
         let targets = Targets { target_lufs: -5.0, true_peak_db: -9.0 };
         let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
 
-        let report = run(targets, &path, None, None, &job).unwrap();
+        let report = run(targets, Options::default(), &path, None, None, &job).unwrap();
 
         assert!(report.gain_db.is_finite());
         assert!(report.limiter_max_reduction_db >= 0.0);
@@ -580,11 +642,46 @@ mod tests {
         let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
         let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
 
-        let report = run(targets, &path, None, None, &job).unwrap();
+        let report = run(targets, Options::default(), &path, None, None, &job).unwrap();
 
         assert_eq!(report.input_media.codec, "aac");
         assert_eq!(report.output_media.codec, "aac");
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn copy_paths_are_numbered_and_never_overwrite() {
+        let dir = std::env::temp_dir().join(format!("audio-normalizer-copies-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let input = dir.join("Clip.MP4");
+        assert_eq!(copy_path(&input).unwrap(), dir.join("Clip (normalized).MP4"));
+        fs::write(dir.join("Clip (normalized).MP4"), b"x").unwrap();
+        assert_eq!(copy_path(&input).unwrap(), dir.join("Clip (normalized 2).MP4"));
+        assert!(copy_path(Path::new("no-extension")).is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn e2e_copy_keeps_the_original_untouched() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-copy-{}.wav", std::process::id()));
+        write_test_wav(&path);
+        let original = fs::read(&path).unwrap();
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let options = Options { output: OutputMode::Copy };
+
+        let first = run(targets, options, &path, None, None, &job).unwrap();
+        let second = run(targets, options, &path, None, None, &job).unwrap();
+
+        assert!(!first.replaced);
+        assert_eq!(fs::read(&path).unwrap(), original, "the source file must not change");
+        assert_ne!(first.output_path, second.output_path, "a second copy must not overwrite the first");
+        let measured = analyze::run(targets, Path::new(&first.output_path), &job).unwrap().report.measurement;
+        assert!((measured.integrated_lufs - targets.target_lufs).abs() < 1.0);
+        assert!(first.size_after > 0);
+        fs::remove_file(&path).unwrap();
+        fs::remove_file(&first.output_path).unwrap();
+        fs::remove_file(&second.output_path).unwrap();
     }
 
     #[test]
@@ -667,7 +764,7 @@ mod tests {
             let path = Path::new(file);
             let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
             let before = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
-            let report = run(targets, path, None, None, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
+            let report = run(targets, Options::default(), path, None, None, &job).unwrap_or_else(|e| panic!("{file}: {e:#}"));
             let after = analyze::run(targets, path, &job).unwrap_or_else(|e| panic!("{file}: {e:#}")).report;
             println!(
                 "{file}: {:.1} -> {:.1} LUFS (report {:.1}, TP {:.1}), TP {:.1} dBTP, limiter {:.1} dB, {:.2}s -> {:.2}s",

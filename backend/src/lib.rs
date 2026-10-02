@@ -148,13 +148,14 @@ async fn normalize_file(
     path: String,
     targets: Targets,
     measured: Option<Measurement>,
+    options: Option<normalize::Options>,
 ) -> Result<NormalizeReport, CommandError> {
     targets.validate()?;
     let path = PathBuf::from(path);
     // Taken, not borrowed: the file is replaced, so the cache is stale after.
     let audio = measured.and(cache.take_for(&path));
     run_job(app, slot.inner().clone(), move |job| {
-        normalize::run(targets, &path, measured, audio, job)
+        normalize::run(targets, options.unwrap_or_default(), &path, measured, audio, job)
     })
     .await
 }

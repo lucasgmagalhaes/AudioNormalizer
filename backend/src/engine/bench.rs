@@ -102,7 +102,7 @@ fn bench_pipeline() {
     let measured = Some(analysis.report.measurement);
     let cache = analysis.cache.map(Arc::new);
     println!("cached audio                {:>7.1} MB", cache.as_ref().map_or(0.0, |c| c.bytes() as f64 / 1e6));
-    let report = normalize::run(targets, path, measured, cache, &job).unwrap();
+    let report = normalize::run(targets, normalize::Options::default(), path, measured, cache, &job).unwrap();
     let t2 = Instant::now();
     println!("analyze total               {:>7.2}s", (t1 - t0).as_secs_f64());
     let m = marks.lock().unwrap();

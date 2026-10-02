@@ -9,6 +9,7 @@ import {
   type AnalysisReport,
   type FileInfo,
   type NormalizeReport,
+  type OutputMode,
   type Stage,
   type Targets,
 } from "./api";
@@ -48,6 +49,8 @@ const ui = {
   language: byId<HTMLSelectElement>("language"),
   analyze: byId<HTMLButtonElement>("analyze"),
   normalize: byId<HTMLButtonElement>("normalize"),
+  normalizeLabel: byId("normalize-label"),
+  output: byId<HTMLSelectElement>("output"),
   cancel: byId<HTMLButtonElement>("cancel"),
   progress: byId("progress"),
   progressLabel: byId("progress-label"),
@@ -110,6 +113,10 @@ function channelsLabel(n: number): string {
 
 // ---------------------------------------------------------------- state -> UI
 
+function outputMode(): OutputMode {
+  return ui.output.value === "copy" ? "copy" : "replace";
+}
+
 function targets(): Targets {
   return { targetLufs: Number(ui.target.value), truePeakDb: Number(ui.ceiling.value) };
 }
@@ -128,6 +135,8 @@ function render() {
 
   ui.analyze.disabled = busy || !state.file;
   ui.normalize.disabled = busy || !state.file;
+  ui.normalizeLabel.textContent = t(outputMode() === "copy" ? "normalizeCopy" : "normalizeReplace");
+  ui.output.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = state.file !== null;
@@ -225,8 +234,11 @@ function renderResult(report: NormalizeReport | null) {
   if (!report) {
     return;
   }
-  byId("result-sub").textContent = t("resultSub", { seconds: decimal(report.elapsedSeconds) });
-  byId("result-sub").title = report.path;
+  const seconds = decimal(report.elapsedSeconds);
+  byId("result-sub").textContent = report.replaced
+    ? t("resultSub", { seconds })
+    : t("resultSubCopy", { seconds, name: report.outputPath.split(/[/\\]/).pop() ?? report.outputPath });
+  byId("result-sub").title = report.outputPath;
   const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) });
   byId("result-verdict").textContent = report.outputMedia.hasVideo ? `${verdict} ${t("resultVerdictVideo")}` : verdict;
   byId("r-before").textContent = lufs(report.inputLufs);
@@ -337,12 +349,16 @@ async function runNormalize() {
     return;
   }
   const file = state.file;
-  let approved: boolean;
-  try {
-    approved = await askReplace(file);
-  } catch (err) {
-    showError(errorMessage(err));
-    return;
+  const output = outputMode();
+  // Only replacing the original needs a confirmation; a copy leaves it intact.
+  let approved = output === "copy";
+  if (!approved) {
+    try {
+      approved = await askReplace(file);
+    } catch (err) {
+      showError(errorMessage(err));
+      return;
+    }
   }
   if (!approved || state.busy || state.file?.path !== file.path) {
     return;
@@ -356,12 +372,14 @@ async function runNormalize() {
   setProgress(measured === null ? "analyze" : "normalize", 0);
   render();
   try {
-    const report = await api.normalize(file.path, targets(), measured);
-    // The file on disk changed: old analysis no longer applies.
-    state.analysis = null;
-    state.analyzedPath = null;
-    state.file = await api.inspectFile(file.path).catch(() => file);
-    renderAnalysis();
+    const report = await api.normalize(file.path, targets(), measured, { output });
+    if (report.replaced) {
+      // The file on disk changed: old analysis no longer applies.
+      state.analysis = null;
+      state.analyzedPath = null;
+      state.file = await api.inspectFile(file.path).catch(() => file);
+      renderAnalysis();
+    }
     renderResult(report);
   } catch (err) {
     showError(isCancelled(err) ? t("errorCancelled") : errorMessage(err));
@@ -440,6 +458,7 @@ ui.cancel.addEventListener("click", () => {
   ui.progressLabel.textContent = t("cancelling");
   void api.cancel();
 });
+ui.output.addEventListener("change", render);
 ui.target.addEventListener("change", () => void reassess());
 ui.ceiling.addEventListener("change", () => void reassess());
 ui.language.addEventListener("change", () => {
