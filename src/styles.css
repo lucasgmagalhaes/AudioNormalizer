@@ -13,7 +13,6 @@
   --warn: #9a6100;
   --bad: #c13030;
   --on-accent: #ffffff;
-  --shadow: 0 1px 2px rgba(20, 24, 40, 0.06), 0 8px 24px rgba(20, 24, 40, 0.06);
   --radius: 14px;
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
 }
@@ -33,8 +32,7 @@
     --warn: #f0b43c;
     --bad: #ff6b6b;
     --on-accent: #0e1016;
-    --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.25);
-  }
+    }
 }
 
 * {
@@ -368,11 +366,6 @@ select:focus-visible {
   overflow: hidden;
 }
 
-.bar-thin {
-  height: 6px;
-  margin: 14px 0 4px;
-}
-
 .bar-fill {
   width: 100%;
   height: 100%;
@@ -432,10 +425,6 @@ select:focus-visible {
 
 #analysis .potential-value {
   color: var(--tone);
-}
-
-#analysis .bar-fill {
-  background: var(--tone);
 }
 
 .scale {
@@ -690,12 +679,6 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.footnote {
-  text-align: center;
-  color: var(--muted);
-  font-size: 12px;
 }
 
 @media (prefers-reduced-motion: reduce) {
