@@ -1,0 +1,13 @@
+{
+  "name": "audio-normalizer-lint",
+  "private": true,
+  "type": "module",
+  "description": "ESLint toolchain, isolated because typescript-eslint does not support TypeScript 7 yet",
+  "devDependencies": {
+    "@eslint/js": "^10.0.0",
+    "@stylistic/eslint-plugin": "^5.0.0",
+    "eslint": "^10.0.0",
+    "typescript": "~6.0.0",
+    "typescript-eslint": "^8.71.0"
+  }
+}
