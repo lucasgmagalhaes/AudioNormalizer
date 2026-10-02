@@ -294,10 +294,16 @@ async function runAnalysis() {
 async function runNormalize() {
   if (!state.file || state.busy) return;
   const file = state.file;
-  const approved = await confirm(
-    `“${file.name}” será substituído pelo vídeo normalizado. Essa ação não pode ser desfeita.`,
-    { title: "Substituir vídeo original?", kind: "warning", okLabel: "Normalizar e substituir", cancelLabel: "Cancelar" },
-  );
+  let approved: boolean;
+  try {
+    approved = await confirm(
+      `“${file.name}” será substituído pelo vídeo normalizado. Essa ação não pode ser desfeita.`,
+      { title: "Substituir vídeo original?", kind: "warning", okLabel: "Normalizar e substituir", cancelLabel: "Cancelar" },
+    );
+  } catch (err) {
+    showError(errorMessage(err));
+    return;
+  }
   if (!approved || state.busy || state.file?.path !== file.path) return;
   const measured =
     state.analysis && state.analyzedPath === file.path ? state.analysis.measurement : null;
