@@ -521,6 +521,21 @@ mod tests {
         fs::write(path, wav).unwrap();
     }
 
+    fn write_test_aac(path: &Path) {
+        let ffmpeg = PathBuf::from(std::env::var("FFMPEG_DIR").expect("FFMPEG_DIR"))
+            .join("bin")
+            .join("ffmpeg.exe");
+        let status = std::process::Command::new(ffmpeg)
+            .args([
+                "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                "sine=frequency=1000:sample_rate=48000:duration=2", "-c:a", "aac", "-b:a", "128k",
+            ])
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[test]
     fn e2e_normalizes_generated_wav() {
         let path = std::env::temp_dir().join(format!("audio-normalizer-{}.wav", std::process::id()));
@@ -555,6 +570,20 @@ mod tests {
         assert!(report.gain_db.is_finite());
         assert!(report.limiter_max_reduction_db >= 0.0);
         assert_eq!(report.input_media.codec, report.output_media.codec);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn e2e_normalizes_aac_input() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-aac-{}.m4a", std::process::id()));
+        write_test_aac(&path);
+        let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+
+        let report = run(targets, &path, None, None, &job).unwrap();
+
+        assert_eq!(report.input_media.codec, "aac");
+        assert_eq!(report.output_media.codec, "aac");
         fs::remove_file(path).unwrap();
     }
 
