@@ -502,8 +502,11 @@ mod tests {
         write_test_wav(&path);
         let targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
         let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
-        let before = analyze::run(targets, &path, &job).unwrap().report;
-        let report = run(targets, &path, None, None, &job).unwrap();
+        let analysis = analyze::run(targets, &path, &job).unwrap();
+        let cache = analysis.cache.map(Arc::new).unwrap();
+        assert!(cache.bytes() > 0);
+        let before = analysis.report;
+        let report = run(targets, &path, Some(before.measurement), Some(cache), &job).unwrap();
         let after = analyze::run(targets, &path, &job).unwrap().report;
         assert!((after.measurement.integrated_lufs - before.assessment.expected_lufs).abs() < 1.0);
         assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5);

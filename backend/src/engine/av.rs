@@ -369,5 +369,9 @@ mod tests {
         assert_eq!(extension(Path::new("movie.MP4")), "mp4");
         assert_eq!(extension(Path::new("no-extension")), "");
         assert!(c_path(Path::new("invalid\0path")).is_err());
+        assert!(ErrBuf::new().error().to_string().contains("desconhecido"));
+        let info = MediaInfo { duration: 0.0, has_video: false, audio: AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 } };
+        assert!(probe(Path::new("missing-file.wav")).is_err());
+        assert!(PcmDecoder::open(Path::new("missing-file.wav"), &info, 0).is_err());
     }
 }
