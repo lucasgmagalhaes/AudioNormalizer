@@ -302,6 +302,14 @@ mod tests {
     }
 
     #[test]
+    fn empty_input_produces_no_output() {
+        let mut limiter = Limiter::new(1, 48_000, 0.9);
+        let mut output = vec![1.0];
+        limiter.process(&[], &mut output);
+        assert!(output.is_empty());
+    }
+
+    #[test]
     fn block_size_does_not_change_the_result() {
         let input: Vec<f32> = (0..30_000).map(|i| ((i as f32) * 0.07).sin() * (1.0 + (i % 5000) as f32 / 2000.0)).collect();
         let mut whole = Limiter::new(2, 48_000, 0.7);
