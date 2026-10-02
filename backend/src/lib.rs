@@ -205,6 +205,7 @@ fn inspect_file(path: String) -> Result<FileInfo, CommandError> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(Arc::new(JobSlot::default()))
         .manage(CacheSlot::default())

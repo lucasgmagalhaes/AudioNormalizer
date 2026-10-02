@@ -113,13 +113,14 @@ jobs:
         shell: pwsh
         run: |
           $installer = Get-ChildItem backend\target\release\bundle\nsis\*.exe | Select-Object -First 1
+          # GitHub stores release assets with spaces replaced by dots, so the URL must match that.
           $signature = Get-Content "$($installer.FullName).sig" -Raw
           $manifest = @{
             version = "${{ inputs.version }}"
             pub_date = (Get-Date).ToUniversalTime().ToString("o")
             platforms = @{
               "windows-x86_64" = @{
-                url = "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/$($installer.Name)"
+                url = "https://github.com/${{ github.repository }}/releases/download/${{ inputs.tag }}/$($installer.Name -replace ' ', '.')"
                 signature = $signature.Trim()
               }
             }

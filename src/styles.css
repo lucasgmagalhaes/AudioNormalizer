@@ -41,6 +41,7 @@
 
 html,
 body {
+  height: 100%;
   margin: 0;
   background: var(--bg);
   color: var(--text);
@@ -98,6 +99,215 @@ svg {
   gap: 16px;
 }
 
+/* window frame: our own title bar replaces the operating system's */
+body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.viewport {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.titlebar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  align-items: stretch;
+  flex: none;
+  height: 36px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+}
+
+.titlebar-icon {
+  width: 18px;
+  height: 18px;
+  align-self: center;
+  margin: 0 8px 0 12px;
+}
+
+.titlebar-drag {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+}
+
+.titlebar-title {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.menubar {
+  display: flex;
+  align-items: stretch;
+}
+
+.menu-root {
+  position: relative;
+  display: flex;
+}
+
+.menu-trigger {
+  padding: 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  cursor: default;
+}
+
+.menu-trigger:hover,
+.menu-trigger[aria-expanded="true"] {
+  background: var(--surface-2);
+}
+
+.menu-trigger:focus-visible,
+.menu-item:focus-visible,
+.window-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  min-width: 240px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+}
+
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px 6px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: default;
+}
+
+.menu-item:hover:not([aria-disabled="true"]),
+.menu-item:focus:not([aria-disabled="true"]) {
+  background: var(--accent-soft);
+}
+
+.menu-item[aria-disabled="true"] {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.menu-mark {
+  flex: none;
+  width: 16px;
+  text-align: center;
+  color: var(--accent);
+}
+
+.menu-item[aria-checked="true"] .menu-mark::before {
+  content: "¹3";
+}
+
+.menu-item[role="menuitemradio"][aria-checked="true"] .menu-mark::before {
+  content: "CF";
+  font-size: 9px;
+}
+
+.menu-label {
+  flex: 1;
+}
+
+.menu-shortcut {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.menu-heading {
+  padding: 6px 10px 2px 30px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.menu-separator {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+
+.window-controls {
+  display: flex;
+}
+
+.window-button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: default;
+}
+
+.window-button svg {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+}
+
+.window-button:hover {
+  background: var(--surface-2);
+}
+
+.window-close:hover {
+  background: #c42b1c;
+  color: #ffffff;
+}
+
+.window-button[data-state="normal"] .icon-restore,
+.window-button[data-state="maximized"] .icon-maximize {
+  display: none;
+}
+
+.about-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.about-mark {
+  width: 48px;
+  height: 48px;
+}
+
+.about-head p {
+  margin: 0;
+}
+
 /* header */
 .brand {
   display: flex;
@@ -118,21 +328,6 @@ svg {
 .brand p {
   margin: 0;
   color: var(--muted);
-}
-
-.language {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.language select {
-  width: auto;
-  padding: 6px 30px 6px 10px;
 }
 
 /* drop zone */

@@ -7,6 +7,26 @@
     <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body>
+    <div class="titlebar">
+      <img class="titlebar-icon" src="/logo.svg" alt="" data-tauri-drag-region />
+      <nav id="menubar" class="menubar" role="menubar" data-i18n-aria-label="menuLabel" aria-label="Menu"></nav>
+      <div class="titlebar-drag" data-tauri-drag-region>
+        <span class="titlebar-title" data-tauri-drag-region>Audio Normalizer</span>
+      </div>
+      <div class="window-controls">
+        <button id="win-minimize" class="window-button" type="button">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5h8" /></svg>
+        </button>
+        <button id="win-maximize" class="window-button" type="button" data-state="normal">
+          <svg class="icon-maximize" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.5" y="1.5" width="7" height="7" /></svg>
+          <svg class="icon-restore" viewBox="0 0 10 10" aria-hidden="true"><path d="M3 1.5h5.5V7M1.5 3H7v5.5H1.5z" /></svg>
+        </button>
+        <button id="win-close" class="window-button window-close" type="button">
+          <svg viewBox="0 0 10 10" aria-hidden="true"><path d="m1.5 1.5 7 7m0-7-7 7" /></svg>
+        </button>
+      </div>
+    </div>
+    <div class="viewport">
     <main class="app">
       <header class="app-header">
         <div class="brand">
@@ -15,14 +35,6 @@
             <h1>Audio Normalizer</h1>
             <p data-i18n="tagline">Deixa o volume dos seus vídeos no nível certo para cada plataforma.</p>
           </div>
-          <label class="language">
-            <span data-i18n="language">Idioma</span>
-            <select id="language">
-              <option value="pt-BR">Português</option>
-              <option value="en">English</option>
-              <option value="es">Español</option>
-            </select>
-          </label>
         </div>
       </header>
 
@@ -240,6 +252,23 @@
         </div>
       </section>
     </main>
+    </div>
+
+    <dialog id="about-dialog" class="dialog about" aria-labelledby="about-title">
+      <div class="about-head">
+        <img class="about-mark" src="/logo.svg" alt="" />
+        <div>
+          <h2 id="about-title">Audio Normalizer</h2>
+          <p id="about-version" class="muted num"></p>
+        </div>
+      </div>
+      <p data-i18n="aboutDescription">Deixa o volume dos seus vídeos no nível certo, sem recodificar a imagem.</p>
+      <p class="muted" data-i18n="aboutFfmpeg">Usa as bibliotecas FFmpeg (LGPL). A medição segue a EBU R128 / ITU-R BS.1770.</p>
+      <div class="dialog-actions">
+        <button id="about-repository" class="btn btn-secondary" type="button" data-i18n="menuRepository">Código-fonte no GitHub</button>
+        <button id="about-close" class="btn btn-primary" type="button" data-i18n="aboutClose">Fechar</button>
+      </div>
+    </dialog>
 
     <dialog id="confirm-dialog" class="dialog" aria-labelledby="confirm-title">
       <h2 id="confirm-title" data-i18n="confirmTitle">Substituir vídeo original?</h2>

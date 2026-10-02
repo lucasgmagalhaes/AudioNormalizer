@@ -1,8 +1,12 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { confirm, message, open } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
+import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { isFinished, overallPercent, summarize, type QueueStatus } from "./batch";
-import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
+import { applyLanguage, currentLanguage, decimal, languages, t, type Language } from "./i18n";
+import { initTitlebar, type Menu } from "./titlebar";
 import {
   type CleanupOptions,
   api,
@@ -64,7 +68,8 @@ const ui = {
   fileDetail: byId("file-detail"),
   target: byId<HTMLSelectElement>("target"),
   ceiling: byId<HTMLSelectElement>("ceiling"),
-  language: byId<HTMLSelectElement>("language"),
+  aboutDialog: byId<HTMLDialogElement>("about-dialog"),
+  aboutVersion: byId("about-version"),
   analyze: byId<HTMLButtonElement>("analyze"),
   normalize: byId<HTMLButtonElement>("normalize"),
   normalizeLabel: byId("normalize-label"),
@@ -788,10 +793,36 @@ async function runBatch() {
   render();
 }
 
-async function checkForUpdates() {
+const REPOSITORY_URL = "https://github.com/lucasgmagalhaes/AudioNormalizer";
+const AUTO_UPDATE_KEY = "audio-normalizer.auto-update";
+
+function autoUpdateEnabled(): boolean {
+  try {
+    return localStorage.getItem(AUTO_UPDATE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+function setAutoUpdate(enabled: boolean) {
+  try {
+    localStorage.setItem(AUTO_UPDATE_KEY, enabled ? "on" : "off");
+  } catch {
+    // The choice only lasts for this session when storage is unavailable.
+  }
+}
+
+/**
+ * Looks for a newer release. The automatic check at startup stays quiet unless
+ * there is an update; a manual one also says when there is none or it failed.
+ */
+async function checkForUpdates(manual = false) {
   try {
     const update = await check();
     if (!update) {
+      if (manual) {
+        await message(t("updateNone", { version: await getVersion() }), { title: t("updateTitle"), kind: "info" });
+      }
       return;
     }
     const approved = await confirm(t("updateMessage", { version: update.version }), {
@@ -805,11 +836,99 @@ async function checkForUpdates() {
     }
   } catch (error) {
     console.warn("Update check failed", error);
+    if (manual) {
+      await message(t("updateFailed", { error: errorMessage(error) }), { title: t("updateTitle"), kind: "error" });
+    }
   }
 }
 
+async function showAbout() {
+  ui.aboutVersion.textContent = t("aboutVersion", { version: await getVersion().catch(() => "?") });
+  if (!ui.aboutDialog.open) {
+    ui.aboutDialog.showModal();
+  }
+}
+
+function openExternal(url: string) {
+  void openUrl(url).catch((error) => showError(errorMessage(error)));
+}
+
+const LANGUAGE_NAMES: Record<Language, string> = { "pt-BR": "Português", en: "English", es: "Español" };
+
+function changeLanguage(language: Language) {
+  applyLanguage(language);
+  refreshLanguage();
+}
+
+function menus(): Menu[] {
+  const busy = state.busy !== null;
+  const reportPath = state.report?.outputPath;
+  return [
+    {
+      id: "file",
+      label: t("menuFile"),
+      entries: [
+        { id: "import", label: t("menuImport"), shortcut: "Ctrl+O", disabled: busy, run: () => void pickFile() },
+        {
+          id: "reveal",
+          label: t("menuReveal"),
+          disabled: !reportPath,
+          run: () => reportPath && void revealItemInDir(reportPath).catch((error) => showError(errorMessage(error))),
+        },
+        { separator: true },
+        { id: "quit", label: t("menuQuit"), shortcut: "Alt+F4", run: () => void getCurrentWindow().close() },
+      ],
+    },
+    {
+      id: "settings",
+      label: t("menuSettings"),
+      entries: [
+        { heading: t("menuLanguage") },
+        ...languages.map((language) => ({
+          id: `language-${language}`,
+          label: LANGUAGE_NAMES[language],
+          kind: "radio" as const,
+          checked: language === currentLanguage(),
+          run: () => changeLanguage(language),
+        })),
+        { separator: true },
+        {
+          id: "auto-update",
+          label: t("menuAutoUpdate"),
+          kind: "check" as const,
+          checked: autoUpdateEnabled(),
+          run: () => setAutoUpdate(!autoUpdateEnabled()),
+        },
+      ],
+    },
+    {
+      id: "help",
+      label: t("menuHelp"),
+      entries: [
+        { id: "updates", label: t("menuCheckUpdates"), run: () => void checkForUpdates(true) },
+        { separator: true },
+        { id: "issue", label: t("menuReportIssue"), run: () => openExternal(`${REPOSITORY_URL}/issues/new`) },
+        { id: "repository", label: t("menuRepository"), run: () => openExternal(REPOSITORY_URL) },
+        { separator: true },
+        { id: "about", label: t("menuAbout"), run: () => void showAbout() },
+      ],
+    },
+  ];
+}
+
+const titlebar = initTitlebar({
+  menus,
+  windowLabels: () => ({
+    minimize: t("windowMinimize"),
+    maximize: t("windowMaximize"),
+    restore: t("windowRestore"),
+    close: t("windowClose"),
+  }),
+});
+
 /** Re-render text built from state; static markup is handled by applyLanguage. */
 function refreshLanguage() {
+  titlebar.refresh();
   renderTracks();
   renderAnalysis();
   renderResult(state.report);
@@ -869,9 +988,19 @@ ui.track.addEventListener("change", () => {
 });
 ui.target.addEventListener("change", () => void reassess());
 ui.ceiling.addEventListener("change", () => void reassess());
-ui.language.addEventListener("change", () => {
-  applyLanguage(ui.language.value as Language);
-  refreshLanguage();
+ui.aboutDialog.addEventListener("click", (e) => {
+  // A click on the backdrop lands on the dialog element itself.
+  if (e.target === ui.aboutDialog) {
+    ui.aboutDialog.close();
+  }
+});
+byId("about-close").addEventListener("click", () => ui.aboutDialog.close());
+byId("about-repository").addEventListener("click", () => openExternal(REPOSITORY_URL));
+window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o" && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    void pickFile();
+  }
 });
 
 void api.onProgress((event) => {
@@ -893,8 +1022,12 @@ void getCurrentWebview().onDragDropEvent((event) => {
   }
 });
 
-ui.language.value = currentLanguage();
 applyLanguage(currentLanguage());
+titlebar.refresh();
 render();
 // Wait a moment so the update prompt does not cover the first screen.
-window.setTimeout(() => void checkForUpdates(), 4000);
+window.setTimeout(() => {
+  if (autoUpdateEnabled()) {
+    void checkForUpdates();
+  }
+}, 4000);
