@@ -307,76 +307,25 @@ mod tests {
         assert!(read_measurement(&meter, 1).is_err());
     }
 
-    /// Reference values printed by FFmpeg's `ebur128` filter (an independent
-    /// BS.1770 / EBU R128 implementation) for the same file.
-    struct Reference {
-        integrated: f64,
-        range: f64,
-        true_peak: f64,
-    }
-
-    fn ffmpeg_exe() -> std::path::PathBuf {
-        std::path::PathBuf::from(std::env::var("FFMPEG_DIR").expect("FFMPEG_DIR"))
-            .join("bin")
-            .join("ffmpeg.exe")
-    }
-
-    fn generate(path: &Path, source: &str) {
-        let status = std::process::Command::new(ffmpeg_exe())
-            .args(["-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i", source])
-            .args(["-t", "12", "-c:a", "pcm_f32le"])
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(status.success(), "could not generate {source}");
-    }
-
-    /// Value that follows `label` in the filter's summary, e.g. `I:  -23.0 LUFS`.
-    fn summary_value(text: &str, label: &str) -> f64 {
-        let line = text
-            .lines()
-            .rev()
-            .find(|line| line.trim_start().starts_with(label))
-            .unwrap_or_else(|| panic!("no `{label}` in the ebur128 summary"));
-        line.trim_start()[label.len()..]
-            .split_whitespace()
-            .next()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_else(|| panic!("unparseable `{line}`"))
-    }
-
-    fn reference(path: &Path) -> Reference {
-        let output = std::process::Command::new(ffmpeg_exe())
-            .args(["-hide_banner", "-nostats", "-i"])
-            .arg(path)
-            .args(["-af", "ebur128=peak=true", "-f", "null", "-"])
-            .output()
-            .unwrap();
-        let text = String::from_utf8_lossy(&output.stderr);
-        Reference {
-            integrated: summary_value(&text, "I:"),
-            range: summary_value(&text, "LRA:"),
-            true_peak: summary_value(&text, "Peak:"),
-        }
-    }
-
-    /// Our measurement must agree with an independent implementation on
-    /// signals that exercise gating (silence gaps) and loudness range.
+    /// Our measurement must agree with FFmpeg's own `ebur128` filter, run
+    /// in-process through the bridge (no ffmpeg process), on signals that
+    /// exercise channel weighting, noise, gating and loudness range.
     #[test]
     fn measurement_matches_the_ffmpeg_ebur128_reference() {
-        let signals = [
-            ("tone", "sine=frequency=1000:sample_rate=48000"),
-            ("pink-noise", "anoisesrc=color=pink:amplitude=0.2:sample_rate=48000:seed=7"),
+        let signals: [(&str, u16, Vec<f32>); 4] = [
+            ("tone", 1, testsig::tone(12.0, 1000.0, 0.25)),
             (
-                // Loud bursts, a quiet bed and full-silence gaps.
-                "bursts-and-silence",
-                "aevalsrc='0.5*sin(2*PI*330*t)*lt(mod(t,6),2)+0.04*sin(2*PI*180*t)*between(mod(t,6),2,4)':s=48000",
+                "stereo-tones",
+                2,
+                testsig::stereo(&testsig::tone(12.0, 1000.0, 0.25), &testsig::tone(12.0, 440.0, 0.1)),
             ),
+            ("pink-noise", 1, testsig::pink_noise(12.0, 0.2, 7)),
+            ("bursts-and-silence", 1, testsig::bursts(12.0)),
         ];
-        for (name, source) in signals {
+        for (name, channels, samples) in signals {
             let path = std::env::temp_dir().join(format!("audio-normalizer-ref-{name}-{}.wav", std::process::id()));
-            generate(&path, source);
-            let expected = reference(&path);
+            testsig::write_wav(&path, channels, &samples);
+            let expected = av::reference_loudness(&path).unwrap();
             let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
             let measured = run(TARGETS, &path, &job).unwrap().report.measurement;
             let _ = std::fs::remove_file(&path);
@@ -391,9 +340,10 @@ mod tests {
             // EBU Tech 3342 allows +-1 LU on loudness range; short synthetic
             // signals have few short-term blocks, so the percentiles move.
             near("loudness range", measured.loudness_range, expected.range, 1.0);
-            near("true peak", measured.true_peak_db, expected.true_peak, 0.3);
+            near("true peak", measured.true_peak_db, linear_to_db(expected.true_peak), 0.3);
         }
     }
 
+    use super::super::testsig;
     use std::sync::atomic::AtomicBool;
 }

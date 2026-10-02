@@ -583,19 +583,23 @@ mod tests {
         fs::write(path, wav).unwrap();
     }
 
+    /// Encodes a tone to AAC through our own bridge (WAV in, .m4a out), so
+    /// no ffmpeg executable is needed.
     fn write_test_aac(path: &Path) {
-        let ffmpeg = PathBuf::from(std::env::var("FFMPEG_DIR").expect("FFMPEG_DIR"))
-            .join("bin")
-            .join("ffmpeg.exe");
-        let status = std::process::Command::new(ffmpeg)
-            .args([
-                "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
-                "sine=frequency=1000:sample_rate=48000:duration=2", "-c:a", "aac", "-b:a", "128k",
-            ])
-            .arg(path)
-            .status()
-            .unwrap();
-        assert!(status.success());
+        let wav = path.with_extension("fixture.wav");
+        testsig::write_wav(&wav, 1, &testsig::tone(2.0, 1000.0, 0.25));
+        let info = av::probe(&wav).unwrap();
+        let mut decoder = PcmDecoder::open(&wav, &info, 0).unwrap();
+        let mut remuxer = Remuxer::open(&wav, path, &info, "").unwrap();
+        let mut block = Vec::new();
+        while decoder.read(&mut block).unwrap() {
+            remuxer.write(&block).unwrap();
+        }
+        remuxer.finish().unwrap();
+        // Windows will not delete a file that is still open.
+        drop(remuxer);
+        drop(decoder);
+        fs::remove_file(wav).unwrap();
     }
 
     #[test]
@@ -745,10 +749,11 @@ mod tests {
         fs::write(&replacement, b"new").unwrap();
         replace_original(TempFile(replacement), &original).unwrap();
         assert_eq!(fs::read(&original).unwrap(), b"new");
-        let info = MediaInfo { duration: 1.0, has_video: false, audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 } };
+        let info = MediaInfo { duration: 1.0, has_video: false, audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 }, track: 0 };
         assert!(verify(&base.with_extension("missing.wav"), &info).is_err());
         fs::remove_file(original).unwrap();
     }
+    use super::super::testsig;
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
 

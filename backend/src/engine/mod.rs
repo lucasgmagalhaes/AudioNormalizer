@@ -10,6 +10,8 @@ mod bench;
 pub mod job;
 mod limiter;
 pub mod normalize;
+#[cfg(test)]
+mod testsig;
 
 use anyhow::{bail, Result};
 use serde::Deserialize;

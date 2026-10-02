@@ -20,6 +20,15 @@ struct AvbMediaInfo {
 }
 
 #[repr(C)]
+struct AvbTrackInfo {
+    sample_rate: c_int,
+    channels: c_int,
+    codec: [c_char; 32],
+    language: [c_char; 16],
+    title: [c_char; 64],
+}
+
+#[repr(C)]
 struct AvbAudioCache {
     _private: [u8; 0],
 }
@@ -36,17 +45,19 @@ struct AvbRemuxer {
 
 extern "C" {
     fn avb_init();
-    fn avb_probe(path: *const c_char, info: *mut AvbMediaInfo, err: *mut c_char) -> c_int;
+    fn avb_audio_tracks(path: *const c_char, out: *mut AvbTrackInfo, max: c_int, err: *mut c_char) -> c_int;
+    fn avb_probe(path: *const c_char, track: c_int, info: *mut AvbMediaInfo, err: *mut c_char) -> c_int;
     fn avb_cache_free(cache: *mut AvbAudioCache);
     #[cfg(test)]
     fn avb_cache_bytes(cache: *const AvbAudioCache) -> i64;
-    fn avb_decoder_open(path: *const c_char, record_limit: i64, err: *mut c_char) -> *mut AvbDecoder;
+    fn avb_decoder_open(path: *const c_char, track: c_int, record_limit: i64, err: *mut c_char) -> *mut AvbDecoder;
     fn avb_decoder_open_cache(cache: *const AvbAudioCache, err: *mut c_char) -> *mut AvbDecoder;
     fn avb_decoder_take_cache(dec: *mut AvbDecoder) -> *mut AvbAudioCache;
     fn avb_decoder_read(dec: *mut AvbDecoder, out: *mut f32, max_frames: c_int, err: *mut c_char) -> c_int;
     fn avb_decoder_close(dec: *mut AvbDecoder);
     fn avb_remuxer_open(
         input: *const c_char,
+        track: c_int,
         output: *const c_char,
         encoder_options: *const c_char,
         err: *mut c_char,
@@ -57,6 +68,34 @@ extern "C" {
     fn avb_remuxer_read_monitor(mux: *mut AvbRemuxer, out: *mut f32, max_frames: c_int) -> c_int;
     fn avb_remuxer_finish(mux: *mut AvbRemuxer, err: *mut c_char) -> c_int;
     fn avb_remuxer_close(mux: *mut AvbRemuxer);
+    #[cfg(test)]
+    fn avb_ref_loudness(path: *const c_char, out: *mut AvbRefLoudness, err: *mut c_char) -> c_int;
+}
+
+/// Loudness as measured by FFmpeg's own `ebur128` filter (test reference).
+#[cfg(test)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AvbRefLoudness {
+    pub integrated: f64,
+    pub range: f64,
+    /// Linear amplitude of the highest true peak.
+    pub true_peak: f64,
+}
+
+/// Measures the first audio track with libavfilter's `ebur128`, in-process
+/// through the bridge, as an independent reference for our own meter.
+#[cfg(test)]
+pub fn reference_loudness(path: &Path) -> Result<AvbRefLoudness> {
+    init();
+    let path = c_path(path)?;
+    let mut err = ErrBuf::new();
+    let mut out = AvbRefLoudness::default();
+    // SAFETY: valid path, writable struct and error buffer.
+    if unsafe { avb_ref_loudness(path.as_ptr(), &mut out, err.ptr()) } < 0 {
+        return Err(err.error());
+    }
+    Ok(out)
 }
 
 fn init() {
@@ -107,9 +146,62 @@ pub struct MediaInfo {
     pub duration: f64,
     pub has_video: bool,
     pub audio: AudioInfo,
+    /// Which audio track `audio` describes, by order among audio streams.
+    pub track: usize,
 }
 
+/// One audio track of a file, for the user to choose from.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioTrack {
+    pub index: usize,
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub language: String,
+    pub title: String,
+}
+
+fn c_text(raw: &[c_char]) -> String {
+    // SAFETY: the bridge NUL-terminates every text field (snprintf).
+    unsafe { CStr::from_ptr(raw.as_ptr()) }.to_string_lossy().into_owned()
+}
+
+/// Audio tracks in file order.
+pub fn audio_tracks(path: &Path) -> Result<Vec<AudioTrack>> {
+    const MAX_TRACKS: usize = 32;
+    init();
+    let path = c_path(path)?;
+    let mut err = ErrBuf::new();
+    let mut raw: Vec<AvbTrackInfo> = (0..MAX_TRACKS)
+        .map(|_| AvbTrackInfo { sample_rate: 0, channels: 0, codec: [0; 32], language: [0; 16], title: [0; 64] })
+        .collect();
+    // SAFETY: `raw` holds MAX_TRACKS writable entries; valid path and error buffer.
+    let count = unsafe { avb_audio_tracks(path.as_ptr(), raw.as_mut_ptr(), MAX_TRACKS as c_int, err.ptr()) };
+    if count < 0 {
+        return Err(err.error());
+    }
+    Ok(raw
+        .iter()
+        .take(count as usize)
+        .enumerate()
+        .map(|(index, t)| AudioTrack {
+            index,
+            codec: c_text(&t.codec),
+            sample_rate: t.sample_rate.max(0) as u32,
+            channels: t.channels.max(0) as u32,
+            language: c_text(&t.language),
+            title: c_text(&t.title),
+        })
+        .collect())
+}
+
+/// Media info for the first audio track.
 pub fn probe(path: &Path) -> Result<MediaInfo> {
+    probe_track(path, 0)
+}
+
+pub fn probe_track(path: &Path, track: usize) -> Result<MediaInfo> {
     init();
     let path = c_path(path)?;
     let mut err = ErrBuf::new();
@@ -122,7 +214,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
         codec: [0; 32],
     };
     // SAFETY: valid NUL-terminated path, writable struct and error buffer.
-    if unsafe { avb_probe(path.as_ptr(), &mut raw, err.ptr()) } < 0 {
+    if unsafe { avb_probe(path.as_ptr(), track as c_int, &mut raw, err.ptr()) } < 0 {
         return Err(err.error());
     }
     // SAFETY: the bridge NUL-terminates `codec` (snprintf into 32 bytes).
@@ -137,6 +229,7 @@ pub fn probe(path: &Path) -> Result<MediaInfo> {
             sample_rate: raw.sample_rate as u32,
             channels: raw.channels as u32,
         },
+        track,
     })
 }
 
@@ -200,7 +293,9 @@ impl PcmDecoder {
         let path = c_path(path)?;
         let mut err = ErrBuf::new();
         // SAFETY: valid path and error buffer; null is handled below.
-        let raw = unsafe { avb_decoder_open(path.as_ptr(), record_limit.min(i64::MAX as u64) as i64, err.ptr()) };
+        let raw = unsafe {
+            avb_decoder_open(path.as_ptr(), info.track as c_int, record_limit.min(i64::MAX as u64) as i64, err.ptr())
+        };
         let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
         Ok(Self { ptr, channels: info.audio.channels as usize, _source: None })
     }
@@ -277,7 +372,9 @@ impl Remuxer {
         let options = CString::new(encoder_options).map_err(|_| anyhow!("opções inválidas"))?;
         let mut err = ErrBuf::new();
         // SAFETY: valid NUL-terminated strings and error buffer; null is handled below.
-        let raw = unsafe { avb_remuxer_open(input.as_ptr(), output.as_ptr(), options.as_ptr(), err.ptr()) };
+        let raw = unsafe {
+            avb_remuxer_open(input.as_ptr(), info.track as c_int, output.as_ptr(), options.as_ptr(), err.ptr())
+        };
         let ptr = NonNull::new(raw).ok_or_else(|| err.error())?;
         let mut remuxer = Self { ptr, channels: info.audio.channels as usize, monitor_channels: 0 };
         remuxer.monitor_channels = remuxer.monitor_format().map_or(0, |f| f.channels as usize);
@@ -375,7 +472,7 @@ mod tests {
             *dest = *source as c_char;
         }
         assert_eq!(bridge_error.error().to_string(), "bridge failed");
-        let info = MediaInfo { duration: 0.0, has_video: false, audio: AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 } };
+        let info = MediaInfo { duration: 0.0, has_video: false, audio: AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 }, track: 0 };
         assert!(probe(Path::new("missing-file.wav")).is_err());
         assert!(PcmDecoder::open(Path::new("missing-file.wav"), &info, 0).is_err());
     }

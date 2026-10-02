@@ -26,9 +26,23 @@ typedef struct AvbMediaInfo {
     char codec[32];    /* source audio codec name */
 } AvbMediaInfo;
 
+/* One audio track of a file, as listed by avb_audio_tracks. */
+typedef struct AvbTrackInfo {
+    int sample_rate;
+    int channels;
+    char codec[32];
+    char language[16]; /* container metadata, empty when absent */
+    char title[64];    /* container metadata, empty when absent */
+} AvbTrackInfo;
+
 void avb_init(void);
 
-int avb_probe(const char *path, AvbMediaInfo *info, char *err);
+/* Lists up to `max` audio tracks in file order. Returns how many were
+ * written, negative on error. */
+int avb_audio_tracks(const char *path, AvbTrackInfo *out, int max, char *err);
+
+/* `track` selects the audio track by order among audio streams (0 = first). */
+int avb_probe(const char *path, int track, AvbMediaInfo *info, char *err);
 
 /* The first audio track's compressed packets kept in memory, so it can be
  * decoded again without reading the (possibly huge) file. Read-only once
@@ -42,7 +56,7 @@ typedef struct AvbDecoder AvbDecoder;
 
 /* With `record_limit` > 0 the packets read are also recorded, up to that
  * many bytes; see avb_decoder_take_cache. */
-AvbDecoder *avb_decoder_open(const char *path, int64_t record_limit, char *err);
+AvbDecoder *avb_decoder_open(const char *path, int track, int64_t record_limit, char *err);
 /* Decodes from a cache instead of the file. The cache must outlive it. */
 AvbDecoder *avb_decoder_open_cache(const AvbAudioCache *cache, char *err);
 /* After the whole track was read: hands over the recording (caller frees),
@@ -57,7 +71,7 @@ typedef struct AvbRemuxer AvbRemuxer;
 
 /* `encoder_options` is an optional "key=value:key=value" list of private
  * encoder options (e.g. "aac_coder=fast"); NULL or "" for defaults. */
-AvbRemuxer *avb_remuxer_open(const char *input, const char *output,
+AvbRemuxer *avb_remuxer_open(const char *input, int track, const char *output,
                              const char *encoder_options, char *err);
 /* Name of the audio encoder in use, e.g. "aac" or "libopus". */
 const char *avb_remuxer_encoder(const AvbRemuxer *mux);

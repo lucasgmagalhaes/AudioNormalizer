@@ -47,12 +47,17 @@ static int open_input(const char *path, AVFormatContext **fmt, char *err)
     return 0;
 }
 
-/* The first audio track is the one we normalize (same as `-map 0:a:0`). */
-static int first_audio_stream(const AVFormatContext *fmt)
+/* Stream index of the `track`-th audio track (0 = first, like `-map 0:a:0`),
+ * or -1 when the file has fewer audio tracks. */
+static int nth_audio_stream(const AVFormatContext *fmt, int track)
 {
-    for (unsigned i = 0; i < fmt->nb_streams; i++)
-        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO)
+    int seen = 0;
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        if (fmt->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            continue;
+        if (seen++ == track)
             return (int)i;
+    }
     return -1;
 }
 
@@ -152,7 +157,34 @@ static int converter_push(Converter *c, const uint8_t **data, int nb,
 /* probe                                                                     */
 /* ------------------------------------------------------------------------ */
 
-int avb_probe(const char *path, AvbMediaInfo *info, char *err)
+int avb_audio_tracks(const char *path, AvbTrackInfo *out, int max, char *err)
+{
+    AVFormatContext *fmt = NULL;
+    int ret = open_input(path, &fmt, err);
+    if (ret < 0)
+        return ret;
+    int count = 0;
+    for (unsigned i = 0; i < fmt->nb_streams && count < max; i++) {
+        const AVStream *st = fmt->streams[i];
+        if (st->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+            continue;
+        AvbTrackInfo *t = &out[count++];
+        memset(t, 0, sizeof(*t));
+        t->sample_rate = st->codecpar->sample_rate;
+        t->channels = st->codecpar->ch_layout.nb_channels;
+        snprintf(t->codec, sizeof(t->codec), "%s", avcodec_get_name(st->codecpar->codec_id));
+        const AVDictionaryEntry *lang = av_dict_get(st->metadata, "language", NULL, 0);
+        const AVDictionaryEntry *title = av_dict_get(st->metadata, "title", NULL, 0);
+        if (lang)
+            snprintf(t->language, sizeof(t->language), "%s", lang->value);
+        if (title)
+            snprintf(t->title, sizeof(t->title), "%s", title->value);
+    }
+    avformat_close_input(&fmt);
+    return count;
+}
+
+int avb_probe(const char *path, int track, AvbMediaInfo *info, char *err)
 {
     AVFormatContext *fmt = NULL;
     int ret = open_input(path, &fmt, err);
@@ -160,10 +192,10 @@ int avb_probe(const char *path, AvbMediaInfo *info, char *err)
         return ret;
 
     memset(info, 0, sizeof(*info));
-    int audio = first_audio_stream(fmt);
+    int audio = nth_audio_stream(fmt, track);
     if (audio < 0) {
         avformat_close_input(&fmt);
-        return fail(err, "o arquivo não possui faixa de áudio", 0);
+        return fail(err, "o arquivo não possui essa faixa de áudio", 0);
     }
 
     for (unsigned i = 0; i < fmt->nb_streams; i++) {
@@ -339,7 +371,7 @@ static int decoder_init(AvbDecoder *d, const AVCodecParameters *par, AVRational 
     return 0;
 }
 
-AvbDecoder *avb_decoder_open(const char *path, int64_t record_limit, char *err)
+AvbDecoder *avb_decoder_open(const char *path, int track, int64_t record_limit, char *err)
 {
     AvbDecoder *d = av_mallocz(sizeof(*d));
     if (!d) {
@@ -349,9 +381,9 @@ AvbDecoder *avb_decoder_open(const char *path, int64_t record_limit, char *err)
     if (open_input(path, &d->fmt, err) < 0)
         goto error;
 
-    d->stream = first_audio_stream(d->fmt);
+    d->stream = nth_audio_stream(d->fmt, track);
     if (d->stream < 0) {
-        fail(err, "o arquivo não possui faixa de áudio", 0);
+        fail(err, "o arquivo não possui essa faixa de áudio", 0);
         goto error;
     }
     /* Only demux what we decode. */
@@ -721,7 +753,7 @@ static int copy_chapters(AvbRemuxer *m, char *err)
 
 static void open_monitor(AvbRemuxer *m);
 
-AvbRemuxer *avb_remuxer_open(const char *input, const char *output,
+AvbRemuxer *avb_remuxer_open(const char *input, int track, const char *output,
                              const char *encoder_options, char *err)
 {
     AvbRemuxer *m = av_mallocz(sizeof(*m));
@@ -733,9 +765,9 @@ AvbRemuxer *avb_remuxer_open(const char *input, const char *output,
     if (open_input(input, &m->in, err) < 0)
         goto error;
 
-    m->audio_in = first_audio_stream(m->in);
+    m->audio_in = nth_audio_stream(m->in, track);
     if (m->audio_in < 0) {
-        fail(err, "o arquivo não possui faixa de áudio", 0);
+        fail(err, "o arquivo não possui essa faixa de áudio", 0);
         goto error;
     }
     const AVStream *audio_st = m->in->streams[m->audio_in];

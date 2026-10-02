@@ -6,13 +6,14 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const FFMPEG_LIBS: [&str; 4] = ["avformat", "avcodec", "avutil", "swresample"];
+const FFMPEG_LIBS: [&str; 5] = ["avformat", "avcodec", "avutil", "swresample", "avfilter"];
 
 fn main() {
     println!("cargo::rustc-check-cfg=cfg(coverage)");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=native/avbridge.c");
     println!("cargo:rerun-if-changed=native/avbridge.h");
+    println!("cargo:rerun-if-changed=native/avbridge_ref.c");
 
     let ffmpeg_dir = PathBuf::from(env::var("FFMPEG_DIR").unwrap_or_else(|_| {
         panic!(
@@ -29,6 +30,9 @@ fn main() {
 
     cc::Build::new()
         .file("native/avbridge.c")
+        // Test-only reference meter (libavfilter). Nothing in the app calls it,
+        // so the linker never pulls this object in and the app does not load avfilter.
+        .file("native/avbridge_ref.c")
         .include(&include)
         .include("native")
         .std("c11")
