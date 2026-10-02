@@ -29,6 +29,8 @@ export interface Measurement {
   loudnessRange: number;
   truePeakDb: number;
   samplePeakDb: number;
+  maxShortTermLufs?: number;
+  maxMomentaryLufs?: number;
 }
 
 export interface MediaSummary {
@@ -69,6 +71,7 @@ export interface NormalizeOptions {
   track: number;
   allTracks: boolean;
   leveling: boolean;
+  lossless: boolean;
 }
 
 export interface NormalizeReport {
@@ -79,6 +82,9 @@ export interface NormalizeReport {
   leveled: boolean;
   inputLufs: number;
   inputTruePeakDb: number;
+  inputLoudnessRange: number;
+  inputMaxShortTermLufs?: number;
+  inputMaxMomentaryLufs?: number;
   outputLufs: number;
   outputTruePeakDb: number;
   targetLufs: number;

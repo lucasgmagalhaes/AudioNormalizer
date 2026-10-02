@@ -72,6 +72,8 @@ const ui = {
   targetCustom: byId<HTMLInputElement>("target-custom"),
   targetError: byId("target-error"),
   leveling: byId<HTMLInputElement>("leveling"),
+  lossless: byId<HTMLInputElement>("lossless"),
+  copyReport: byId<HTMLButtonElement>("copy-report"),
   resultChecks: byId("result-checks"),
   queue: byId("queue"),
   queueList: byId("queue-list"),
@@ -232,6 +234,7 @@ function render() {
   ui.track.disabled = busy;
   ui.targetCustom.disabled = busy;
   ui.leveling.disabled = busy;
+  ui.lossless.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = hasInput;
@@ -359,6 +362,63 @@ function renderChecks(report: NormalizeReport) {
   );
 }
 
+/** Plain-text summary of a result, for pasting into a ticket or a message. */
+function reportText(report: NormalizeReport): string {
+  const name = report.path.split(/[/\\]/).pop() ?? report.path;
+  const loudnessOk = Math.abs(report.outputLufs - report.targetLufs) <= LOUDNESS_TOLERANCE_LU;
+  const peakOk = report.outputTruePeakDb <= report.truePeakCeilingDb;
+  const yesNo = (ok: boolean) => t(ok ? "reportYes" : "reportNo");
+  const levels =
+    report.inputMaxShortTermLufs === undefined || report.inputMaxMomentaryLufs === undefined
+      ? []
+      : [
+        t("reportMax", {
+          short: lufs(report.inputMaxShortTermLufs),
+          momentary: lufs(report.inputMaxMomentaryLufs),
+        }),
+      ];
+  return [
+    t("reportTitle"),
+    t("reportFile", { name }),
+    t("reportTargets", { target: lufs(report.targetLufs), ceiling: `${decimal(report.truePeakCeilingDb)} dBTP` }),
+    t("reportBefore", {
+      lufs: lufs(report.inputLufs),
+      peak: `${decimal(report.inputTruePeakDb)} dBTP`,
+      range: decimal(report.inputLoudnessRange),
+    }),
+    ...levels,
+    t("reportAfter", { lufs: lufs(report.outputLufs), peak: `${decimal(report.outputTruePeakDb)} dBTP` }),
+    t("reportGain", {
+      gain: db(report.gainDb),
+      limiter:
+        report.limiterMaxReductionDb > 0.05
+          ? t("limiterUpTo", { db: decimal(report.limiterMaxReductionDb) })
+          : t("limiterIdle"),
+    }),
+    t("reportConformity", {
+      tolerance: decimal(LOUDNESS_TOLERANCE_LU),
+      loudness: yesNo(loudnessOk),
+      peak: yesNo(peakOk),
+    }),
+    t("reportOutput", { path: report.outputPath, mode: t(report.replaced ? "reportReplaced" : "reportCopy") }),
+  ].join("\n");
+}
+
+async function copyReport() {
+  if (!state.report) {
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(reportText(state.report));
+    ui.copyReport.textContent = t("copied");
+    window.setTimeout(() => {
+      ui.copyReport.textContent = t("copyReport");
+    }, 2000);
+  } catch {
+    showError(t("copyFailed"));
+  }
+}
+
 function renderResult(report: NormalizeReport | null) {
   state.report = report;
   ui.result.hidden = report === null;
@@ -396,6 +456,10 @@ function renderResult(report: NormalizeReport | null) {
   byId("r-codec").textContent = `${before.codec.toUpperCase()} → ${after.codec.toUpperCase()}`;
   byId("r-audio").textContent = `${channelsLabel(before.channels)} / ${before.sampleRate / 1000} kHz → ${channelsLabel(after.channels)} / ${after.sampleRate / 1000} kHz`;
   byId("r-duration").textContent = `${duration(before.duration)} → ${duration(after.duration)}`;
+  byId("r-range").textContent = `${decimal(report.inputLoudnessRange)} LU`;
+  const optionalLufs = (value: number | undefined) => (value === undefined ? "—" : lufs(value));
+  byId("r-short").textContent = optionalLufs(report.inputMaxShortTermLufs);
+  byId("r-momentary").textContent = optionalLufs(report.inputMaxMomentaryLufs);
   const videoLabel = (hasVideo: boolean) => t(hasVideo ? "videoKept" : "videoNone");
   byId("r-video").textContent = `${videoLabel(before.hasVideo)} → ${videoLabel(after.hasVideo)}`;
 }
@@ -553,6 +617,7 @@ async function runNormalize() {
       track: choice.track,
       allTracks: choice.all,
       leveling: ui.leveling.checked,
+      lossless: ui.lossless.checked,
     });
     if (report.replaced) {
       // The file on disk changed: old analysis no longer applies.
@@ -687,6 +752,7 @@ async function runBatch() {
         track: 0,
         allTracks: false,
         leveling: ui.leveling.checked,
+        lossless: ui.lossless.checked,
       });
       item.status = "done";
     } catch (err) {
@@ -761,6 +827,7 @@ function startOver() {
 }
 
 ui.again.addEventListener("click", startOver);
+ui.copyReport.addEventListener("click", () => void copyReport());
 ui.queueAgain.addEventListener("click", startOver);
 ui.cancel.addEventListener("click", () => {
   state.stopped = true;

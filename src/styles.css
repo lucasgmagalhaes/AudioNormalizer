@@ -963,6 +963,8 @@ select:focus-visible {
 
 .result-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   justify-content: flex-end;
   margin-top: 16px;
 }

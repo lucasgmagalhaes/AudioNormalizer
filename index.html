@@ -87,6 +87,10 @@
           <span class="check-row"><input id="leveling" type="checkbox" /><span data-i18n="leveling">Nivelar a dinâmica (fala)</span></span>
           <small class="field-hint" data-i18n="levelingHint">Aproxima os trechos baixos e altos antes de ajustar o volume. Bom para fala; evite em música.</small>
         </label>
+        <label class="field field-wide field-check">
+          <span class="check-row"><input id="lossless" type="checkbox" /><span data-i18n="lossless">Evitar nova perda de qualidade (áudio em FLAC)</span></span>
+          <small class="field-hint" data-i18n="losslessHint">Não comprime o áudio de novo, mas o arquivo fica maior. Só vale quando o formato aceita FLAC, como MKV.</small>
+        </label>
         <label id="track-field" class="field field-wide" hidden>
           <span data-i18n="track">Faixa de áudio</span>
           <select id="track"></select>
@@ -216,10 +220,14 @@
             <div><dt data-i18n="audio">Áudio</dt><dd id="r-audio"></dd></div>
             <div><dt data-i18n="duration">Duração</dt><dd id="r-duration" class="num"></dd></div>
             <div><dt data-i18n="video">Vídeo</dt><dd id="r-video"></dd></div>
+            <div><dt data-i18n="range">Faixa dinâmica (LRA)</dt><dd id="r-range" class="num"></dd></div>
+            <div><dt data-i18n="maxShortTerm">Máx. curto prazo (3 s)</dt><dd id="r-short" class="num"></dd></div>
+            <div><dt data-i18n="maxMomentary">Máx. momentâneo (400 ms)</dt><dd id="r-momentary" class="num"></dd></div>
           </dl>
         </details>
 
         <div class="result-actions">
+          <button id="copy-report" class="btn btn-secondary" type="button" data-i18n="copyReport">Copiar relatório</button>
           <button id="again" class="btn btn-secondary" type="button" data-i18n="again">Normalizar outro</button>
         </div>
       </section>

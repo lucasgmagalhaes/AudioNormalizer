@@ -78,6 +78,18 @@ test("several files can be chosen from the dialog and by dropping", () => {
   assert.match(html, /<ol id="queue-list"/);
 });
 
+test("the lossless choice reaches the engine for single files and for the queue", () => {
+  assert.match(html, /<input id="lossless" type="checkbox"/);
+  assert.equal(main.match(/lossless: ui\.lossless\.checked/g)?.length, 2, "both normalize paths must send it");
+});
+
+test("the report can be copied and uses the measured values", () => {
+  assert.match(html, /id="copy-report"/);
+  assert.match(main, /navigator\.clipboard\.writeText\(reportText\(state\.report\)\)/);
+  assert.match(main, /report\.inputMaxShortTermLufs/, "the loudest short-term reading must reach the report");
+  assert.match(main, /catch \{[\s\S]*showError\(t\("copyFailed"\)\)/, "a failed copy must be reported");
+});
+
 test("normalize reports confirmation dialog failures instead of failing silently", () => {
   const ask = runNormalize.indexOf("await askReplace(");
   const tryIndex = runNormalize.lastIndexOf("try {", ask);
