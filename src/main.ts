@@ -55,6 +55,16 @@ const ui = {
   progressFill: byId("progress-fill"),
   progressBar: document.querySelector<HTMLElement>("#progress .bar")!,
   error: byId("error"),
+  errorText: byId("error-text"),
+  actionHint: byId("action-hint"),
+  again: byId<HTMLButtonElement>("again"),
+  dialog: byId<HTMLDialogElement>("confirm-dialog"),
+  confirmLead: byId("confirm-lead"),
+  confirmTarget: byId("confirm-target"),
+  confirmCeiling: byId("confirm-ceiling"),
+  confirmGain: byId("confirm-gain"),
+  confirmOk: byId<HTMLButtonElement>("confirm-ok"),
+  confirmCancel: byId<HTMLButtonElement>("confirm-cancel"),
   analysis: byId("analysis"),
   result: byId("result"),
 };
@@ -120,6 +130,7 @@ function render() {
   ui.normalize.disabled = busy || !state.file;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
+  ui.actionHint.hidden = state.file !== null;
   ui.cancel.hidden = !busy;
   ui.progress.hidden = !busy;
 }
@@ -141,7 +152,7 @@ function setProgress(stage: Stage, percent: number) {
 
 function showError(message: string | null) {
   ui.error.hidden = message === null;
-  ui.error.textContent = message ?? "";
+  ui.errorText.textContent = message ?? "";
 }
 
 function scalePosition(value: number): string {
@@ -172,15 +183,13 @@ function renderAnalysis() {
   }
   byId("verdict-text").textContent = text;
 
-  byId("potential-value").textContent = `${Math.round(a.improvementPercent)}%`;
-  byId("potential-fill").style.transform = `scaleX(${Math.max(2, a.improvementPercent) / 100})`;
+  byId("gain-value").textContent = db(a.gainDb);
 
   byId("scale-current").style.left = scalePosition(m.integratedLufs);
   byId("scale-target").style.left = scalePosition(a.targetLufs);
 
   byId("m-current").textContent = lufs(m.integratedLufs);
   byId("m-target").textContent = lufs(a.targetLufs);
-  byId("m-gain").textContent = db(a.gainDb);
   byId("m-peak").textContent = `${decimal(m.truePeakDb)} dBTP`;
   byId("m-lra").textContent = `${decimal(m.loudnessRange)} LU`;
   byId("m-audio").textContent =
@@ -218,6 +227,8 @@ function renderResult(report: NormalizeReport | null) {
   }
   byId("result-sub").textContent = t("resultSub", { seconds: decimal(report.elapsedSeconds) });
   byId("result-sub").title = report.path;
+  const verdict = t("resultVerdict", { peak: decimal(report.outputTruePeakDb) });
+  byId("result-verdict").textContent = report.outputMedia.hasVideo ? `${verdict} ${t("resultVerdictVideo")}` : verdict;
   byId("r-before").textContent = lufs(report.inputLufs);
   byId("r-after").textContent = lufs(report.outputLufs);
   byId("r-gain").textContent = db(report.gainDb);
@@ -306,6 +317,21 @@ async function runAnalysis() {
   }
 }
 
+function askReplace(file: FileInfo): Promise<boolean> {
+  const goal = targets();
+  const known = state.analysis && state.analyzedPath === file.path ? state.analysis : null;
+  ui.confirmLead.textContent = t("confirmMessage", { name: file.name });
+  ui.confirmTarget.textContent = lufs(goal.targetLufs);
+  ui.confirmCeiling.textContent = `${decimal(goal.truePeakDb)} dBTP`;
+  ui.confirmGain.textContent = known ? db(known.assessment.gainDb) : t("confirmGainPending");
+  return new Promise((resolve) => {
+    ui.dialog.returnValue = "";
+    ui.dialog.addEventListener("close", () => resolve(ui.dialog.returnValue === "ok"), { once: true });
+    ui.dialog.showModal();
+    ui.confirmCancel.focus();
+  });
+}
+
 async function runNormalize() {
   if (!state.file || state.busy) {
     return;
@@ -313,12 +339,7 @@ async function runNormalize() {
   const file = state.file;
   let approved: boolean;
   try {
-    approved = await confirm(t("confirmMessage", { name: file.name }), {
-      title: t("confirmTitle"),
-      kind: "warning",
-      okLabel: t("confirmOk"),
-      cancelLabel: t("cancel"),
-    });
+    approved = await askReplace(file);
   } catch (err) {
     showError(errorMessage(err));
     return;
@@ -403,6 +424,18 @@ ui.drop.addEventListener("keydown", (e) => {
 });
 ui.analyze.addEventListener("click", () => void runAnalysis());
 ui.normalize.addEventListener("click", () => void runNormalize());
+ui.confirmOk.addEventListener("click", () => ui.dialog.close("ok"));
+ui.confirmCancel.addEventListener("click", () => ui.dialog.close("cancel"));
+ui.again.addEventListener("click", () => {
+  state.file = null;
+  state.analysis = null;
+  state.analyzedPath = null;
+  showError(null);
+  renderAnalysis();
+  renderResult(null);
+  render();
+  ui.drop.focus();
+});
 ui.cancel.addEventListener("click", () => {
   ui.progressLabel.textContent = t("cancelling");
   void api.cancel();
@@ -439,4 +472,5 @@ void getCurrentWebview().onDragDropEvent((event) => {
 ui.language.value = currentLanguage();
 applyLanguage(currentLanguage());
 render();
-void checkForUpdates();
+// Wait a moment so the update prompt does not cover the first screen.
+window.setTimeout(() => void checkForUpdates(), 4000);

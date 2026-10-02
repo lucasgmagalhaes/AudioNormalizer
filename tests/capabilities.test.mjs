@@ -20,10 +20,28 @@ for (const { api, permission } of required) {
   });
 }
 
-test("normalize click handler reports confirm dialog failures", () => {
-  const body = main.slice(main.indexOf("async function runNormalize"));
-  const confirmCall = body.indexOf("await confirm(");
-  const tryIndex = body.lastIndexOf("try {", confirmCall);
-  assert.ok(tryIndex !== -1 && tryIndex < confirmCall, "confirm must be wrapped in try/catch");
-  assert.match(body.slice(confirmCall, confirmCall + 500), /catch \(err\)[\s\S]*showError/);
+const html = readFileSync("index.html", "utf8");
+const runNormalize = main.slice(main.indexOf("async function runNormalize"), main.indexOf("async function reassess"));
+
+test("normalize asks for confirmation in the app before replacing the file", () => {
+  const ask = runNormalize.indexOf("await askReplace(");
+  const busy = runNormalize.indexOf('state.busy = "normalize"');
+  assert.ok(ask !== -1, "runNormalize must await askReplace");
+  assert.ok(busy > ask, "the job must only start after the user approved");
+  assert.doesNotMatch(runNormalize, /\bconfirm\(/, "the destructive step must not use the native dialog");
+});
+
+test("normalize reports confirmation dialog failures instead of failing silently", () => {
+  const ask = runNormalize.indexOf("await askReplace(");
+  const tryIndex = runNormalize.lastIndexOf("try {", ask);
+  assert.ok(tryIndex !== -1, "askReplace must be wrapped in try/catch");
+  assert.match(runNormalize.slice(ask, ask + 300), /catch \(err\)[\s\S]*showError/);
+});
+
+test("the confirmation dialog markup matches the ids main.ts uses", () => {
+  assert.match(html, /<dialog id="confirm-dialog"/);
+  for (const id of ["confirm-lead", "confirm-target", "confirm-ceiling", "confirm-gain", "confirm-ok", "confirm-cancel"]) {
+    assert.match(html, new RegExp(`id="${id}"`), `index.html is missing #${id}`);
+    assert.match(main, new RegExp(`byId(?:<[A-Za-z]+>)?\\("${id}"\\)`), `main.ts does not read #${id}`);
+  }
 });

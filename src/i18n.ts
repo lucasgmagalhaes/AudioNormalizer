@@ -55,6 +55,9 @@ export function applyLanguage(language: Language) {
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => {
     el.textContent = format(language, el.dataset.i18n!);
   });
+  document.querySelectorAll<HTMLElement>("[data-i18n-title]").forEach((el) => {
+    el.title = format(language, el.dataset.i18nTitle!);
+  });
   document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((el) => {
     el.setAttribute("aria-label", format(language, el.dataset.i18nAriaLabel!));
   });
