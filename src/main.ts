@@ -238,7 +238,7 @@ function renderResult(report: NormalizeReport | null) {
     report.limiterMaxReductionDb > 0.05 ? `até ${nf1.format(report.limiterMaxReductionDb)} dB` : "não atuou";
   byId("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
   const chart = (id: string, value: number) => {
-    $(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`;
+    byId(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`;
   };
   chart("chart-loudness-before", report.inputLufs);
   chart("chart-loudness-after", report.outputLufs);
