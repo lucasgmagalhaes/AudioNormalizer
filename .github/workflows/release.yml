@@ -119,5 +119,13 @@ jobs:
             Get-ChildItem -Path "backend/target/release/bundle/inno/*.exe" -File -ErrorAction SilentlyContinue
             Get-Item -LiteralPath latest.json
           ) | ForEach-Object FullName
-          $pre = if ('${{ inputs.prerelease }}' -eq 'true') { '--prerelease' } else { '' }
-          gh release create "${{ inputs.tag }}" $assets --title "Audio Normalizer ${{ inputs.version }}" --generate-notes $pre
+          $args = @(
+            'release', 'create', '${{ inputs.tag }}'
+            $assets
+            '--title', 'Audio Normalizer ${{ inputs.version }}'
+            '--generate-notes'
+          )
+          if ('${{ inputs.prerelease }}' -eq 'true') {
+            $args += '--prerelease'
+          }
+          & gh @args
