@@ -36,6 +36,6 @@ export function applyLanguage(language: Language) {
   localStorage.setItem("audio-normalizer.language", language);
   document.documentElement.lang = language;
   document.querySelectorAll<HTMLElement>("[data-i18n]").forEach((el) => { el.textContent = format(language, el.dataset.i18n!); });
-  document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((el) => { el.setAttribute("aria-label", format(language, el.dataset.i18nAriaLabel!); });
+  document.querySelectorAll<HTMLElement>("[data-i18n-aria-label]").forEach((el) => { el.setAttribute("aria-label", format(language, el.dataset.i18nAriaLabel!)); });
 }
 import { FluentBundle, FluentResource } from "@fluent/bundle";
