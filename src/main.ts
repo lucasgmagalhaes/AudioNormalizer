@@ -5,7 +5,7 @@ import { getVersion } from "@tauri-apps/api/app";
 import { revealItemInDir, openUrl } from "@tauri-apps/plugin-opener";
 import { check } from "@tauri-apps/plugin-updater";
 import { isFinished, overallPercent, summarize, type QueueStatus } from "./batch";
-import { applyLanguage, currentLanguage, decimal, languages, t, type Language } from "./i18n";
+import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
 import { initTitlebar, type Menu } from "./titlebar";
 import {
   type CleanupOptions,
@@ -70,6 +70,11 @@ const ui = {
   ceiling: byId<HTMLSelectElement>("ceiling"),
   aboutDialog: byId<HTMLDialogElement>("about-dialog"),
   aboutVersion: byId("about-version"),
+  settingsDialog: byId<HTMLDialogElement>("settings-dialog"),
+  settingsSummary: byId("settings-summary"),
+  openSettings: byId<HTMLButtonElement>("open-settings"),
+  language: byId<HTMLSelectElement>("language"),
+  autoUpdate: byId<HTMLInputElement>("auto-update"),
   viewport: byId("viewport"),
   updateScreen: byId("update-screen"),
   updateStatus: byId("update-status"),
@@ -260,9 +265,21 @@ function render() {
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = hasInput;
+  ui.settingsSummary.textContent = settingsSummary();
   renderQueue();
   ui.cancel.hidden = !busy;
   ui.progress.hidden = !busy;
+}
+
+/** The choices made in the settings dialog, in one line, so they stay visible. */
+function settingsSummary(): string {
+  const chosen = [
+    ui.output.selectedOptions[0]?.text ?? "",
+    ...[ui.leveling, ui.highpass, ui.declip, ui.lossless]
+      .filter((box) => box.checked)
+      .map((box) => box.closest(".check-row")?.querySelector("span:last-child")?.textContent ?? ""),
+  ];
+  return chosen.filter(Boolean).join(" · ");
 }
 
 function stageLabel(stage: Stage): string {
@@ -902,7 +919,13 @@ function openExternal(url: string) {
   void openUrl(url).catch((error) => showError(errorMessage(error)));
 }
 
-const LANGUAGE_NAMES: Record<Language, string> = { "pt-BR": "Português", en: "English", es: "Español" };
+function openSettings() {
+  ui.language.value = currentLanguage();
+  ui.autoUpdate.checked = autoUpdateEnabled();
+  if (!ui.settingsDialog.open) {
+    ui.settingsDialog.showModal();
+  }
+}
 
 function changeLanguage(language: Language) {
   applyLanguage(language);
@@ -931,24 +954,7 @@ function menus(): Menu[] {
     {
       id: "settings",
       label: t("menuSettings"),
-      entries: [
-        { heading: t("menuLanguage") },
-        ...languages.map((language) => ({
-          id: `language-${language}`,
-          label: LANGUAGE_NAMES[language],
-          kind: "radio" as const,
-          checked: language === currentLanguage(),
-          run: () => changeLanguage(language),
-        })),
-        { separator: true },
-        {
-          id: "auto-update",
-          label: t("menuAutoUpdate"),
-          kind: "check" as const,
-          checked: autoUpdateEnabled(),
-          run: () => setAutoUpdate(!autoUpdateEnabled()),
-        },
-      ],
+      entries: [{ id: "open-settings", label: t("menuOpenSettings"), shortcut: "Ctrl+,", run: openSettings }],
     },
     {
       id: "help",
@@ -1021,6 +1027,18 @@ ui.cancel.addEventListener("click", () => {
   void api.cancel();
 });
 ui.output.addEventListener("change", render);
+for (const box of [ui.leveling, ui.highpass, ui.declip, ui.lossless]) {
+  box.addEventListener("change", render);
+}
+ui.language.addEventListener("change", () => changeLanguage(ui.language.value as Language));
+ui.autoUpdate.addEventListener("change", () => setAutoUpdate(ui.autoUpdate.checked));
+ui.openSettings.addEventListener("click", openSettings);
+ui.settingsDialog.addEventListener("click", (e) => {
+  if (e.target === ui.settingsDialog) {
+    ui.settingsDialog.close();
+  }
+});
+byId("settings-close").addEventListener("click", () => ui.settingsDialog.close());
 ui.target.addEventListener("change", render);
 ui.targetCustom.addEventListener("input", () => {
   render();
@@ -1046,6 +1064,11 @@ ui.aboutDialog.addEventListener("click", (e) => {
 byId("about-close").addEventListener("click", () => ui.aboutDialog.close());
 byId("about-repository").addEventListener("click", () => openExternal(REPOSITORY_URL));
 window.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "," && !e.shiftKey && !e.altKey) {
+    e.preventDefault();
+    openSettings();
+    return;
+  }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "o" && !e.shiftKey && !e.altKey) {
     e.preventDefault();
     void pickFile();

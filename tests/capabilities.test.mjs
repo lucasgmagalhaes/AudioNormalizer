@@ -135,3 +135,15 @@ test("the drop-down lists are styled, with the native list as the fallback", () 
   assert.match(css, /::picker\(select\)\s*\{[^}]*border-radius: 12px/, "the list panel must be rounded");
   assert.match(css, /option\s*\{[^}]*border-radius: 8px/, "the options must be rounded");
 });
+
+test("the optional choices, output mode and language live in the settings dialog", () => {
+  const dialog = html.slice(html.indexOf('<dialog id="settings-dialog"'), html.indexOf("</dialog>", html.indexOf('<dialog id="settings-dialog"')));
+  for (const id of ["language", "auto-update", "output", "leveling", "highpass", "declip", "lossless"]) {
+    assert.ok(dialog.includes(`id="${id}"`), `#${id} must be inside the settings dialog`);
+  }
+  const panel = html.slice(html.indexOf('<aside class="panel">'), html.indexOf("</aside>"));
+  assert.match(panel, /id="open-settings"/, "the panel must open the dialog");
+  assert.match(panel, /id="settings-summary"/, "the choices must stay visible in the panel");
+  assert.doesNotMatch(panel, /id="(leveling|output|language)"/, "those controls must not stay in the panel");
+  assert.match(main, /run: openSettings/, "the Settings menu must open the dialog");
+});

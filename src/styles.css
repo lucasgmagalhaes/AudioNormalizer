@@ -1410,3 +1410,43 @@ select:focus-visible {
     flex-direction: column-reverse;
   }
 }
+
+/* settings: the summary row in the panel and the settings dialog */
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-summary {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.settings-row .btn {
+  flex: none;
+  min-height: 36px;
+  padding: 7px 12px;
+}
+
+.settings-dialog {
+  width: min(520px, calc(100vw - 32px));
+}
+
+.settings-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 14px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settings-body .options {
+  padding-top: 14px;
+}
