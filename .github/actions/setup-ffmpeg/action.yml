@@ -1,0 +1,22 @@
+name: Setup FFmpeg SDK
+description: Restore or install the pinned FFmpeg shared development build and export FFMPEG_DIR.
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@v4
+      with:
+        path: ~\AppData\Local\Microsoft\WinGet\Packages\BtbN.FFmpeg.LGPL.Shared.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe
+        key: ${{ runner.os }}-ffmpeg-lgpl-shared-8.1
+
+    - name: Install FFmpeg development libraries
+      shell: pwsh
+      run: |
+        $packageRoot = "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\BtbN.FFmpeg.LGPL.Shared.8.1_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        if (-not (Test-Path $packageRoot)) {
+          winget install --exact --id BtbN.FFmpeg.LGPL.Shared.8.1 --accept-package-agreements --accept-source-agreements
+        }
+        $package = Get-ChildItem $packageRoot -Directory | Select-Object -First 1
+        if (-not $package -or -not (Test-Path "$($package.FullName)\include") -or -not (Test-Path "$($package.FullName)\lib") -or -not (Test-Path "$($package.FullName)\bin")) {
+          throw "The FFmpeg shared development build was not found."
+        }
+        "FFMPEG_DIR=$($package.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
