@@ -544,12 +544,69 @@ mod tests {
     }
 
     #[test]
+    fn e2e_normalizes_and_calibrates_without_preanalysis_cache() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-uncached-{}.wav", std::process::id()));
+        write_test_wav(&path);
+        let targets = Targets { target_lufs: -5.0, true_peak_db: -9.0 };
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+
+        let report = run(targets, &path, None, None, &job).unwrap();
+
+        assert!(report.gain_db.is_finite());
+        assert!(report.limiter_max_reduction_db >= 0.0);
+        assert_eq!(report.input_media.codec, report.output_media.codec);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn temp_paths_are_hidden_and_require_an_extension() {
         assert!(temp_path(Path::new("input"), "normalizing").is_err());
         assert_eq!(
             temp_path(Path::new("C:/media/clip.MP4"), "normalizing").unwrap(),
             PathBuf::from("C:/media/.clip.normalizing.mp4"),
         );
+    }
+
+    #[test]
+    fn describes_media_and_rejects_invalid_encoded_output() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-verify-{}.wav", std::process::id()));
+        write_test_wav(&path);
+        let written = av::probe(&path).unwrap();
+
+        let details = media_details(&written);
+        assert_eq!(details.codec, written.audio.codec);
+        assert_eq!(details.sample_rate, 48_000);
+        assert_eq!(details.channels, 1);
+        assert!(verify(&path, &MediaInfo { has_video: true, ..written.clone() }).is_err());
+        assert!(verify(&path, &MediaInfo { duration: 100.0, ..written }).is_err());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn chain_and_calibration_process_decoded_audio() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-calibrate-{}.wav", std::process::id()));
+        write_test_wav(&path);
+        let info = av::probe(&path).unwrap();
+        let mut chain = Chain::new(&info, 6.0, -1.5).unwrap();
+        let mut output = Vec::new();
+        let mut block = vec![0.1; info.audio.sample_rate as usize];
+        chain.process(&mut block, &mut output).unwrap();
+        chain.flush(&mut output).unwrap();
+        assert!(chain.result().unwrap().output_lufs.is_finite());
+
+        let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+        let mut progress = job.stage("calibrate", 0.0, 1.0);
+        let gain = calibrate(&AudioSource::File(&path), &info, 6.0, -1.5, -14.0, &job, &mut progress).unwrap();
+        assert!((6.0..=MAX_GAIN_DB).contains(&gain));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn temporary_file_is_removed_when_not_replaced() {
+        let path = std::env::temp_dir().join(format!("audio-normalizer-temp-{}.tmp", std::process::id()));
+        fs::write(&path, b"temporary").unwrap();
+        drop(TempFile(path.clone()));
+        assert!(!path.exists());
     }
 
     #[test]
