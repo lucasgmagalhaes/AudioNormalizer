@@ -294,4 +294,16 @@ mod tests {
         assert!(a.peak_over_ceiling);
         assert_ne!(a.verdict, Verdict::None);
     }
+
+    #[test]
+    fn classifies_small_and_moderate_improvements() {
+        assert_eq!(assess(&measurement(-15.0, -3.0), TARGETS).verdict, Verdict::Small);
+        assert_eq!(assess(&measurement(-17.5, -3.0), TARGETS).verdict, Verdict::Moderate);
+    }
+
+    #[test]
+    fn rejects_a_silent_meter() {
+        let meter = EbuR128::new(1, 48_000, Mode::I | Mode::LRA | Mode::TRUE_PEAK | Mode::SAMPLE_PEAK).unwrap();
+        assert!(read_measurement(&meter, 1).is_err());
+    }
 }

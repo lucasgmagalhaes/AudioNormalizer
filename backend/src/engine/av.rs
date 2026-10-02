@@ -359,3 +359,15 @@ pub fn extension(path: &Path) -> String {
         .unwrap_or_default()
         .to_ascii_lowercase()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_extensions_and_rejects_nul_paths() {
+        assert_eq!(extension(Path::new("movie.MP4")), "mp4");
+        assert_eq!(extension(Path::new("no-extension")), "");
+        assert!(c_path(Path::new("invalid\0path")).is_err());
+    }
+}
