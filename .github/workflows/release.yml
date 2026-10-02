@@ -58,11 +58,16 @@ jobs:
           npm ci
           cargo test --manifest-path backend/Cargo.toml
 
+      - name: Synchronize release version
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: npm run version:set -- $env:RELEASE_VERSION
+
       - name: Build Windows installers
         shell: pwsh
         run: |
-          $config = "{\"version\":\"${{ inputs.version }}\"}"
-          npm run app:build -- --bundles nsis,msi --config $config
+          npm run app:build -- --bundles nsis,msi
 
       - name: Build Inno Setup installer
         shell: pwsh
