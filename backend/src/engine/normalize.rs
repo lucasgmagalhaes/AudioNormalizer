@@ -74,6 +74,12 @@ pub struct NormalizeReport {
     pub leveled: bool,
     pub input_lufs: f64,
     pub input_true_peak_db: f64,
+    pub input_loudness_range: f64,
+    /// Loudest short-term / momentary reading of the source, when measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_max_short_term_lufs: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_max_momentary_lufs: Option<f64>,
     pub output_lufs: f64,
     pub output_true_peak_db: f64,
     pub target_lufs: f64,
@@ -162,6 +168,9 @@ pub fn run(
         leveled: options.leveling,
         input_lufs: measurement.integrated_lufs,
         input_true_peak_db: measurement.true_peak_db,
+        input_loudness_range: measurement.loudness_range,
+        input_max_short_term_lufs: measurement.max_short_term_lufs,
+        input_max_momentary_lufs: measurement.max_momentary_lufs,
         output_lufs,
         output_true_peak_db,
         target_lufs: targets.target_lufs,

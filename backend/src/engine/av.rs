@@ -91,6 +91,9 @@ pub struct AvbRefLoudness {
     pub range: f64,
     /// Linear amplitude of the highest true peak.
     pub true_peak: f64,
+    /// Highest momentary and short-term loudness in LUFS.
+    pub max_momentary: f64,
+    pub max_short_term: f64,
 }
 
 /// Measures the first audio track with libavfilter's `ebur128`, in-process

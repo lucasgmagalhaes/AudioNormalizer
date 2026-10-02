@@ -31,6 +31,8 @@ typedef struct AvbRefLoudness {
     double integrated;   /* LUFS */
     double range;        /* LU */
     double true_peak;    /* linear amplitude, highest channel */
+    double max_momentary;  /* LUFS */
+    double max_short_term; /* LUFS */
 } AvbRefLoudness;
 
 static int ref_fail(char *err, const char *what, int code)
@@ -56,9 +58,19 @@ static double meta_number(const AVFrame *frame, const char *key, int *found)
 /* Reads the metadata the ebur128 filter attaches to each frame. Integrated
  * loudness and loudness range are running values, so the last frame wins;
  * true peaks are running per-channel maxima, so the highest value wins. */
-static void collect(AVFrame *frame, int channels, AvbRefLoudness *out, int *have_peak)
+static void collect(AVFrame *frame, int channels, AvbRefLoudness *out, int *have_peak, int *have_levels)
 {
     int found;
+    double momentary = meta_number(frame, "lavfi.r128.M", &found);
+    int ok_m = found;
+    double short_term = meta_number(frame, "lavfi.r128.S", &found);
+    if (ok_m && found && isfinite(momentary) && isfinite(short_term)) {
+        if (!*have_levels || momentary > out->max_momentary)
+            out->max_momentary = momentary;
+        if (!*have_levels || short_term > out->max_short_term)
+            out->max_short_term = short_term;
+        *have_levels = 1;
+    }
     double v = meta_number(frame, "lavfi.r128.I", &found);
     if (found)
         out->integrated = v;
@@ -76,14 +88,15 @@ static void collect(AVFrame *frame, int channels, AvbRefLoudness *out, int *have
     }
 }
 
-static int drain(AVFilterContext *sink, int channels, AvbRefLoudness *out, int *have_peak)
+static int drain(AVFilterContext *sink, int channels, AvbRefLoudness *out, int *have_peak,
+                 int *have_levels)
 {
     AVFrame *frame = av_frame_alloc();
     if (!frame)
         return AVERROR(ENOMEM);
     int ret;
     while ((ret = av_buffersink_get_frame(sink, frame)) >= 0) {
-        collect(frame, channels, out, have_peak);
+        collect(frame, channels, out, have_peak, have_levels);
         av_frame_unref(frame);
     }
     av_frame_free(&frame);
@@ -108,7 +121,7 @@ int avb_ref_loudness(const char *path, AvbRefLoudness *out, char *err)
     AVFilterGraph *graph = avfilter_graph_alloc();
     AVFilterContext *src = NULL, *meter = NULL, *sink = NULL;
     float *pcm = av_malloc_array((size_t)REF_BLOCK_FRAMES * info.channels, sizeof(float));
-    int ret = 0, have_peak = 0;
+    int ret = 0, have_peak = 0, have_levels = 0;
     memset(out, 0, sizeof(*out));
     if (!graph || !pcm) {
         ret = ref_fail(err, "memória insuficiente", AVERROR(ENOMEM));
@@ -162,7 +175,7 @@ int avb_ref_loudness(const char *path, AvbRefLoudness *out, char *err)
         }
         av_frame_free(&frame);
         if (ret >= 0)
-            ret = drain(sink, info.channels, out, &have_peak);
+            ret = drain(sink, info.channels, out, &have_peak, &have_levels);
         if (ret < 0) {
             ret = ref_fail(err, "falha ao medir com o filtro ebur128", ret);
             goto done;
@@ -170,7 +183,7 @@ int avb_ref_loudness(const char *path, AvbRefLoudness *out, char *err)
     }
     ret = av_buffersrc_add_frame(src, NULL);
     if (ret >= 0)
-        ret = drain(sink, info.channels, out, &have_peak);
+        ret = drain(sink, info.channels, out, &have_peak, &have_levels);
     if (ret < 0)
         ret = ref_fail(err, "falha ao encerrar o filtro ebur128", ret);
 

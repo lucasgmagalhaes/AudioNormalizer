@@ -30,6 +30,12 @@ pub struct Measurement {
     pub loudness_range: f64,
     pub true_peak_db: f64,
     pub sample_peak_db: f64,
+    /// Highest short-term (3 s window) loudness, when it was measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_short_term_lufs: Option<f64>,
+    /// Highest momentary (400 ms window) loudness, when it was measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_momentary_lufs: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -129,15 +135,29 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
 
         let (tx, rx) = sync_channel::<Arc<Vec<f32>>>(QUEUE_BLOCKS);
         senders.push(tx);
-        let loudness = s.spawn(move || -> Result<(f64, f64, f64)> {
-            let mut meter = EbuR128::new(channels, rate, Mode::I | Mode::LRA | Mode::SAMPLE_PEAK)
+        let loudness = s.spawn(move || -> Result<LoudnessReading> {
+            let mut meter = EbuR128::new(channels, rate, Mode::I | Mode::LRA | Mode::SAMPLE_PEAK | Mode::M | Mode::S)
                 .context("falha ao iniciar o medidor de loudness")?;
+            // Momentary and short-term loudness are read every 100 ms, the
+            // update rate the EBU specification uses for them.
+            let step = (rate as usize / 10).max(1) * stride;
+            let (mut max_short_term, mut max_momentary) = (None, None);
             for block in rx {
-                meter.add_frames_f32(&block).context("falha ao medir loudness")?;
+                for chunk in block.chunks(step) {
+                    meter.add_frames_f32(chunk).context("falha ao medir loudness")?;
+                    max_short_term = higher(max_short_term, meter.loudness_shortterm().ok());
+                    max_momentary = higher(max_momentary, meter.loudness_momentary().ok());
+                }
             }
             let integrated = meter.loudness_global().context("falha ao calcular loudness")?;
             let sample_peak = (0..channels).map(|ch| meter.sample_peak(ch).unwrap_or(0.0)).fold(0.0, f64::max);
-            Ok((integrated, meter.loudness_range().unwrap_or(0.0), sample_peak))
+            Ok(LoudnessReading {
+                integrated,
+                range: meter.loudness_range().unwrap_or(0.0),
+                sample_peak,
+                max_short_term,
+                max_momentary,
+            })
         });
 
         let mut peak_meters = Vec::with_capacity(stride);
@@ -184,7 +204,7 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             Err(e) if !e.is::<StageStopped>() => return Err(e),
             fed => fed,
         };
-        let (integrated, loudness_range, sample_peak) = loudness?;
+        let LoudnessReading { integrated, range: loudness_range, sample_peak, max_short_term, max_momentary } = loudness?;
         let true_peak = peaks.into_iter().collect::<Result<Vec<f64>>>()?.into_iter().fold(0.0, f64::max);
         if frames? == 0 {
             bail!("a faixa de áudio está vazia");
@@ -197,8 +217,28 @@ pub fn measure(decoder: &mut PcmDecoder, info: &MediaInfo, job: &Job, progress: 
             loudness_range,
             true_peak_db: linear_to_db(true_peak),
             sample_peak_db: linear_to_db(sample_peak),
+            max_short_term_lufs: max_short_term,
+            max_momentary_lufs: max_momentary,
         })
     })
+}
+
+/// What the loudness meter thread hands back.
+struct LoudnessReading {
+    integrated: f64,
+    range: f64,
+    sample_peak: f64,
+    max_short_term: Option<f64>,
+    max_momentary: Option<f64>,
+}
+
+/// The higher of the two, ignoring values that are not real loudness yet
+/// (the meters report -inf until their window has filled).
+fn higher(current: Option<f64>, new: Option<f64>) -> Option<f64> {
+    match (current, new.filter(|v| v.is_finite())) {
+        (Some(a), Some(b)) => Some(a.max(b)),
+        (a, b) => a.or(b),
+    }
 }
 
 pub(crate) fn read_measurement(meter: &EbuR128, channels: u32) -> Result<Measurement> {
@@ -217,6 +257,8 @@ pub(crate) fn read_measurement(meter: &EbuR128, channels: u32) -> Result<Measure
         loudness_range: meter.loudness_range().unwrap_or(0.0),
         true_peak_db: linear_to_db(true_peak),
         sample_peak_db: linear_to_db(sample_peak),
+        max_short_term_lufs: None,
+        max_momentary_lufs: None,
     })
 }
 
@@ -269,7 +311,14 @@ mod tests {
     const TARGETS: Targets = Targets { target_lufs: -14.0, true_peak_db: -1.0 };
 
     fn measurement(i: f64, tp: f64) -> Measurement {
-        Measurement { integrated_lufs: i, loudness_range: 6.0, true_peak_db: tp, sample_peak_db: tp - 0.5 }
+        Measurement {
+            integrated_lufs: i,
+            loudness_range: 6.0,
+            true_peak_db: tp,
+            sample_peak_db: tp - 0.5,
+            max_short_term_lufs: None,
+            max_momentary_lufs: None,
+        }
     }
 
     #[test]
@@ -306,6 +355,15 @@ mod tests {
     fn classifies_small_and_moderate_improvements() {
         assert_eq!(assess(&measurement(-15.0, -3.0), TARGETS).verdict, Verdict::Small);
         assert_eq!(assess(&measurement(-17.5, -3.0), TARGETS).verdict, Verdict::Moderate);
+    }
+
+    #[test]
+    fn the_loudest_window_ignores_values_that_are_not_ready() {
+        assert_eq!(higher(None, Some(f64::NEG_INFINITY)), None);
+        assert_eq!(higher(None, Some(-20.0)), Some(-20.0));
+        assert_eq!(higher(Some(-20.0), Some(-18.0)), Some(-18.0));
+        assert_eq!(higher(Some(-20.0), Some(-25.0)), Some(-20.0));
+        assert_eq!(higher(Some(-20.0), None), Some(-20.0));
     }
 
     #[test]
@@ -348,6 +406,9 @@ mod tests {
             // signals have few short-term blocks, so the percentiles move.
             near("loudness range", measured.loudness_range, expected.range, 1.0);
             near("true peak", measured.true_peak_db, linear_to_db(expected.true_peak), 0.3);
+            // The reference reads at frame boundaries, we read every 100 ms.
+            near("max momentary", measured.max_momentary_lufs.unwrap(), expected.max_momentary, 0.5);
+            near("max short-term", measured.max_short_term_lufs.unwrap(), expected.max_short_term, 0.5);
         }
     }
 

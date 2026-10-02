@@ -290,6 +290,8 @@ mod tests {
     #[test]
     fn assess_rejects_invalid_targets_before_evaluating() {
         let measurement = Measurement {
+            max_short_term_lufs: None,
+            max_momentary_lufs: None,
             integrated_lufs: -20.0,
             loudness_range: 4.0,
             true_peak_db: -3.0,
