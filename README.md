@@ -5,8 +5,6 @@
   <a href="https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer"><img src="https://codecov.io/gh/lucasgmagalhaes/AudioNormalizer/graph/badge.svg" alt="codecov" /></a>
 </p>
 
-# Audio Normalizer
-
 Audio Normalizer is a desktop application that brings videos to a consistent loudness target using EBU R128 / ITU-R BS.1770 measurement. It is built for creators who want predictable playback volume across platforms without re-encoding their video.
 
 ## What it does
