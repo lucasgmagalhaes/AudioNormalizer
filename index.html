@@ -130,11 +130,21 @@
           <svg class="arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12h15m-5-5 5 5-5 5" /></svg>
           <div><span class="eyebrow">Depois</span><span id="r-after" class="big num accent"></span></div>
         </div>
+        <div class="result-chart" aria-label="Comparação do processamento">
+          <div class="chart-row"><span>Loudness</span><div class="chart-track"><i id="chart-loudness-before" class="chart-before"></i><i id="chart-loudness-after" class="chart-after"></i></div><span id="chart-loudness" class="num"></span></div>
+          <div class="chart-row"><span>True peak</span><div class="chart-track"><i id="chart-peak-before" class="chart-before"></i><i id="chart-peak-after" class="chart-after"></i></div><span id="chart-peak" class="num"></span></div>
+        </div>
         <dl class="metrics">
           <div><dt>Ganho aplicado</dt><dd id="r-gain" class="num"></dd></div>
           <div><dt>Pico final</dt><dd id="r-peak" class="num"></dd></div>
           <div><dt>Limitador</dt><dd id="r-limiter" class="num"></dd></div>
           <div><dt>Tamanho</dt><dd id="r-size" class="num"></dd></div>
+        </dl>
+        <dl class="file-diff">
+          <div><dt>Formato</dt><dd id="r-codec"></dd></div>
+          <div><dt>Áudio</dt><dd id="r-audio"></dd></div>
+          <div><dt>Duração</dt><dd id="r-duration" class="num"></dd></div>
+          <div><dt>Vídeo</dt><dd id="r-video"></dd></div>
         </dl>
       </section>
 

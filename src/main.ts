@@ -223,6 +223,19 @@ function renderResult(report: NormalizeReport | null) {
   $("r-limiter").textContent =
     report.limiterMaxReductionDb > 0.05 ? `até ${nf1.format(report.limiterMaxReductionDb)} dB` : "não atuou";
   $("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
+  const chart = (id: string, value: number) => { $(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`; };
+  chart("chart-loudness-before", report.inputLufs);
+  chart("chart-loudness-after", report.outputLufs);
+  chart("chart-peak-before", report.inputTruePeakDb);
+  chart("chart-peak-after", report.outputTruePeakDb);
+  $("chart-loudness").textContent = `${lufs(report.inputLufs)} → ${lufs(report.outputLufs)}`;
+  $("chart-peak").textContent = `${db(report.inputTruePeakDb, "dBTP")} → ${db(report.outputTruePeakDb, "dBTP")}`;
+  const before = report.inputMedia;
+  const after = report.outputMedia;
+  $("r-codec").textContent = `${before.codec.toUpperCase()} → ${after.codec.toUpperCase()}`;
+  $("r-audio").textContent = `${channelsLabel(before.channels)} / ${before.sampleRate / 1000} kHz → ${channelsLabel(after.channels)} / ${after.sampleRate / 1000} kHz`;
+  $("r-duration").textContent = `${duration(before.duration)} → ${duration(after.duration)}`;
+  $("r-video").textContent = `${before.hasVideo ? "preservado" : "sem vídeo"} → ${after.hasVideo ? "preservado" : "sem vídeo"}`;
 }
 
 // ---------------------------------------------------------------- actions

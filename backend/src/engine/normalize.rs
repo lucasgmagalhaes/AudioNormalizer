@@ -35,6 +35,7 @@ const PEAK_TOLERANCE_DB: f64 = 0.5;
 pub struct NormalizeReport {
     pub path: String,
     pub input_lufs: f64,
+    pub input_true_peak_db: f64,
     pub output_lufs: f64,
     pub output_true_peak_db: f64,
     pub target_lufs: f64,
@@ -43,6 +44,25 @@ pub struct NormalizeReport {
     pub elapsed_seconds: f64,
     pub size_before: u64,
     pub size_after: u64,
+    pub input_media: ProcessedMedia,
+    pub output_media: ProcessedMedia,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProcessedMedia {
+    pub codec: String,
+    pub sample_rate: u32,
+    pub channels: u32,
+    pub duration: f64,
+    pub has_video: bool,
+}
+
+fn media_details(info: &MediaInfo) -> ProcessedMedia {
+    ProcessedMedia {
+        codec: info.audio.codec.clone(), sample_rate: info.audio.sample_rate,
+        channels: info.audio.channels, duration: info.duration, has_video: info.has_video,
+    }
 }
 
 /// `measured` and `cache` come from a previous analysis of the same file: the
@@ -111,6 +131,7 @@ pub fn run(
     Ok(NormalizeReport {
         path: input.display().to_string(),
         input_lufs: measurement.integrated_lufs,
+        input_true_peak_db: measurement.true_peak_db,
         output_lufs: encoded.output_lufs,
         output_true_peak_db: encoded.true_peak_db,
         target_lufs: targets.target_lufs,
@@ -119,6 +140,8 @@ pub fn run(
         elapsed_seconds: started.elapsed().as_secs_f64(),
         size_before,
         size_after: fs::metadata(input).map(|m| m.len()).unwrap_or(0),
+        input_media: media_details(&info),
+        output_media: media_details(&encoded.media),
     })
 }
 
@@ -135,6 +158,7 @@ struct Encoded {
     output_lufs: f64,
     true_peak_db: f64,
     limiter_reduction_db: f64,
+    media: MediaInfo,
 }
 
 enum ToEncoder {
@@ -266,6 +290,7 @@ fn encode(
         output_lufs: actual.integrated_lufs,
         true_peak_db: actual.true_peak_db,
         limiter_reduction_db: rendered.limiter_reduction_db,
+        media: written,
     })
 }
 
@@ -512,6 +537,9 @@ mod tests {
         assert!(after.measurement.true_peak_db < targets.true_peak_db + 0.5);
         assert!((after.media.duration - before.media.duration).abs() < 0.5);
         assert_eq!(report.path, path.display().to_string());
+        assert_eq!(report.input_media.channels, report.output_media.channels);
+        assert_eq!(report.input_media.has_video, report.output_media.has_video);
+        assert!((report.input_media.duration - report.output_media.duration).abs() < 0.5);
         fs::remove_file(path).unwrap();
     }
 

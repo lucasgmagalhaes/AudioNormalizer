@@ -55,6 +55,7 @@ export interface AnalysisReport {
 export interface NormalizeReport {
   path: string;
   inputLufs: number;
+  inputTruePeakDb: number;
   outputLufs: number;
   outputTruePeakDb: number;
   targetLufs: number;
@@ -63,6 +64,8 @@ export interface NormalizeReport {
   elapsedSeconds: number;
   sizeBefore: number;
   sizeAfter: number;
+  inputMedia: MediaSummary;
+  outputMedia: MediaSummary;
 }
 
 export type Stage = "analyze" | "calibrate" | "normalize" | "retry" | "verify" | "finalize";
