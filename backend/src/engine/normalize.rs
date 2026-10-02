@@ -431,6 +431,8 @@ fn encode(
 }
 
 struct Rendered {
+    /// Read by the tests; the encoded file is what gets measured for real.
+    #[cfg_attr(not(test), allow(dead_code))]
     output_lufs: f64,
     limiter_reduction_db: f64,
     declipped_samples: Option<u64>,
@@ -438,13 +440,112 @@ struct Rendered {
 
 /// [Cleanup] -> [Leveler] -> gain -> true-peak limiter -> integrated-loudness meter.
 struct Chain {
+    prep: Prep,
+    tail: Tail,
+}
+
+/// The part of the chain that does not depend on the gain: clean-up and
+/// leveling. Calibration runs it once for all the candidate gains.
+struct Prep {
     cleanup: Option<Cleanup>,
     /// Cleaned audio of the block being processed.
     scratch: Vec<f32>,
     leveler: Option<Leveler>,
+}
+
+impl Prep {
+    fn new(info: &MediaInfo, leveler_reference: Option<f64>, cleanup: CleanupSettings) -> Self {
+        let channels = info.audio.channels as usize;
+        let sample_rate = info.audio.sample_rate;
+        Self {
+            cleanup: cleanup.any().then(|| Cleanup::new(cleanup, channels, sample_rate)),
+            scratch: Vec::new(),
+            leveler: leveler_reference.map(|lufs| Leveler::new(channels, sample_rate, lufs)),
+        }
+    }
+
+    /// Cleans and levels `block`, then hands the result to `next`. `block` is
+    /// used as scratch space.
+    fn process<R>(&mut self, block: &mut [f32], next: impl FnOnce(&mut [f32]) -> R) -> R {
+        match self.cleanup.as_mut() {
+            Some(cleanup) => {
+                let mut cleaned = std::mem::take(&mut self.scratch);
+                cleaned.clear();
+                cleanup.process(block, &mut cleaned);
+                if let Some(leveler) = self.leveler.as_mut() {
+                    leveler.process(&mut cleaned);
+                }
+                let done = next(&mut cleaned);
+                self.scratch = cleaned;
+                done
+            }
+            None => {
+                if let Some(leveler) = self.leveler.as_mut() {
+                    leveler.process(block);
+                }
+                next(block)
+            }
+        }
+    }
+
+    /// Audio the clean-up still held back, leveled.
+    fn flush(&mut self) -> Vec<f32> {
+        let mut held = Vec::new();
+        if let Some(cleanup) = self.cleanup.as_mut() {
+            cleanup.flush(&mut held);
+            if let Some(leveler) = self.leveler.as_mut() {
+                leveler.process(&mut held);
+            }
+        }
+        held
+    }
+
+    fn declipped_samples(&self) -> Option<u64> {
+        self.cleanup.as_ref().and_then(Cleanup::declipped_samples)
+    }
+}
+
+/// Gain -> true-peak limiter -> integrated-loudness meter.
+struct Tail {
     gain: f32,
     limiter: Limiter,
     meter: EbuR128,
+}
+
+impl Tail {
+    fn new(info: &MediaInfo, gain_db: f64, ceiling_db: f64) -> Result<Self> {
+        let channels = info.audio.channels;
+        let sample_rate = info.audio.sample_rate;
+        Ok(Self {
+            gain: db_to_linear(gain_db) as f32,
+            limiter: Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32),
+            // Only integrated loudness: peaks are measured on the encoded audio.
+            meter: EbuR128::new(channels, sample_rate, Mode::I).context("falha ao iniciar o medidor de loudness")?,
+        })
+    }
+
+    /// Applies the gain to `block` and writes the limited audio to `out`.
+    fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
+        for sample in block.iter_mut() {
+            *sample *= self.gain;
+        }
+        self.limiter.process(block, out);
+        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+    }
+
+    /// Drains the limiter look-ahead into `out`.
+    fn flush(&mut self, out: &mut Vec<f32>) -> Result<()> {
+        self.limiter.flush(out);
+        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+    }
+
+    fn loudness(&self) -> Result<f64> {
+        self.meter.loudness_global().context("falha ao calcular loudness")
+    }
+
+    fn limiter_reduction_db(&self) -> f64 {
+        -linear_to_db(self.limiter.min_gain)
+    }
 }
 
 impl Chain {
@@ -455,66 +556,32 @@ impl Chain {
         leveler_reference: Option<f64>,
         cleanup: CleanupSettings,
     ) -> Result<Self> {
-        let channels = info.audio.channels;
-        let sample_rate = info.audio.sample_rate;
-        Ok(Self {
-            cleanup: cleanup.any().then(|| Cleanup::new(cleanup, channels as usize, sample_rate)),
-            scratch: Vec::new(),
-            leveler: leveler_reference.map(|lufs| Leveler::new(channels as usize, sample_rate, lufs)),
-            gain: db_to_linear(gain_db) as f32,
-            limiter: Limiter::new(channels as usize, sample_rate, db_to_linear(ceiling_db) as f32),
-            // Only integrated loudness: peaks are measured on the encoded audio.
-            meter: EbuR128::new(channels, sample_rate, Mode::I).context("falha ao iniciar o medidor de loudness")?,
-        })
+        Ok(Self { prep: Prep::new(info, leveler_reference, cleanup), tail: Tail::new(info, gain_db, ceiling_db)? })
     }
 
     /// Cleans, levels and applies the gain to `block` and writes the limited
     /// audio to `out`. `block` is used as scratch space.
     fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
-        match self.cleanup.as_mut() {
-            Some(cleanup) => {
-                let mut cleaned = std::mem::take(&mut self.scratch);
-                cleaned.clear();
-                cleanup.process(block, &mut cleaned);
-                let done = self.shape(&mut cleaned, out);
-                self.scratch = cleaned;
-                done
-            }
-            None => self.shape(block, out),
-        }
-    }
-
-    /// Leveler, gain and limiter over already cleaned audio.
-    fn shape(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
-        if let Some(leveler) = self.leveler.as_mut() {
-            leveler.process(block);
-        }
-        for sample in block.iter_mut() {
-            *sample *= self.gain;
-        }
-        self.limiter.process(block, out);
-        self.meter.add_frames_f32(out).context("falha ao medir loudness")
+        let Self { prep, tail } = self;
+        prep.process(block, |shaped| tail.process(shaped, out))
     }
 
     /// Drains the clean-up and limiter look-ahead into `out`.
     fn flush(&mut self, out: &mut Vec<f32>) -> Result<()> {
-        let mut tail = Vec::new();
-        if let Some(cleanup) = self.cleanup.as_mut() {
-            let mut held = Vec::new();
-            cleanup.flush(&mut held);
-            self.shape(&mut held, &mut tail)?;
-        }
-        self.limiter.flush(&mut tail);
-        self.meter.add_frames_f32(&tail).context("falha ao medir loudness")?;
-        out.append(&mut tail);
+        let mut held = self.prep.flush();
+        let mut limited = Vec::new();
+        self.tail.process(&mut held, &mut limited)?;
+        out.append(&mut limited);
+        self.tail.flush(&mut limited)?;
+        out.append(&mut limited);
         Ok(())
     }
 
     fn result(&self) -> Result<Rendered> {
         Ok(Rendered {
-            output_lufs: self.meter.loudness_global().context("falha ao calcular loudness")?,
-            limiter_reduction_db: -linear_to_db(self.limiter.min_gain),
-            declipped_samples: self.cleanup.as_ref().and_then(Cleanup::declipped_samples),
+            output_lufs: self.tail.loudness()?,
+            limiter_reduction_db: self.tail.limiter_reduction_db(),
+            declipped_samples: self.prep.declipped_samples(),
         })
     }
 }
@@ -546,18 +613,21 @@ fn calibrate(
         .map(|step| (base_gain_db + step).clamp(-MAX_GAIN_DB, MAX_GAIN_DB))
         .collect();
     gains.dedup();
-    let chains = gains
+    // Clean-up and leveling do not depend on the gain: they run once and the
+    // candidates only differ in gain, limiter and meter.
+    let tails = gains
         .iter()
-        .map(|&gain| Chain::new(info, gain, ceiling_db, leveler_reference, cleanup))
+        .map(|&gain| Tail::new(info, gain, ceiling_db))
         .collect::<Result<Vec<_>>>()?;
+    let mut prep = Prep::new(info, leveler_reference, cleanup);
     let mut decoder = source.open(info)?;
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
 
     let loudness = thread::scope(|s| -> Result<Vec<f64>> {
-        let mut senders = Vec::with_capacity(chains.len());
-        let mut workers = Vec::with_capacity(chains.len());
-        for mut chain in chains {
+        let mut senders = Vec::with_capacity(tails.len());
+        let mut workers = Vec::with_capacity(tails.len());
+        for mut tail in tails {
             let (tx, rx) = sync_channel::<Arc<Vec<f32>>>(QUEUE_BLOCKS);
             senders.push(tx);
             workers.push(s.spawn(move || -> Result<f64> {
@@ -566,27 +636,33 @@ fn calibrate(
                 for shared in rx {
                     block.clear();
                     block.extend_from_slice(&shared);
-                    chain.process(&mut block, &mut out)?;
+                    tail.process(&mut block, &mut out)?;
                 }
-                chain.flush(&mut out)?;
-                Ok(chain.result()?.output_lufs)
+                tail.flush(&mut out)?;
+                tail.loudness()
             }));
         }
 
         let fed = (|| -> Result<()> {
             let mut frames = 0u64;
             let mut block = Vec::new();
-            while decoder.read(&mut block)? {
-                job.check_cancelled()?;
-                frames += (block.len() / channels) as u64;
-                let shared = Arc::new(std::mem::take(&mut block));
+            let send = |shared: Arc<Vec<f32>>| -> Result<()> {
                 for tx in &senders {
                     tx.send(shared.clone()).map_err(|_| anyhow::Error::new(StageStopped))?;
                 }
+                Ok(())
+            };
+            while decoder.read(&mut block)? {
+                job.check_cancelled()?;
+                frames += (block.len() / channels) as u64;
+                let shared = prep.process(&mut block, |shaped| Arc::new(shaped.to_vec()));
+                send(shared)?;
                 if total_frames > 0.0 {
                     progress.update(frames as f64 / total_frames);
                 }
             }
+            // What the clean-up still held back goes through like any block.
+            send(Arc::new(prep.flush()))?;
             Ok(())
         })();
         drop(senders);

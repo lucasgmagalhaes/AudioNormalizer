@@ -137,7 +137,17 @@ fn bench_pipeline() {
     let measured = Some(analysis.report.measurement);
     let cache = analysis.cache.map(Arc::new);
     println!("cached audio                {:>7.1} MB", cache.as_ref().map_or(0.0, |c| c.bytes() as f64 / 1e6));
-    let report = normalize::run(targets, normalize::Options::default(), path, measured, cache, &job).unwrap();
+    // BENCH_LEVEL=1 also levels the dynamics and declips, which adds the calibration pass.
+    let options = if std::env::var("BENCH_LEVEL").is_ok() {
+        normalize::Options {
+            leveling: true,
+            cleanup: super::cleanup::CleanupSettings { highpass: true, declip: true },
+            ..Default::default()
+        }
+    } else {
+        normalize::Options::default()
+    };
+    let report = normalize::run(targets, options, path, measured, cache, &job).unwrap();
     let t2 = Instant::now();
     println!("analyze total               {:>7.2}s", (t1 - t0).as_secs_f64());
     let m = marks.lock().unwrap();

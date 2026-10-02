@@ -406,3 +406,28 @@ fn cleanup_is_off_unless_asked_and_never_changes_the_duration() {
         fs::remove_file(file).unwrap();
     }
 }
+
+#[test]
+fn flushing_with_clean_up_keeps_every_frame() {
+    let info = MediaInfo {
+        duration: 3.0,
+        has_video: false,
+        audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2 },
+        track: 0,
+    };
+    let cleanup = CleanupSettings { highpass: true, declip: true };
+    let mut chain = Chain::new(&info, 0.0, -1.5, Some(-20.0), cleanup).unwrap();
+    let (mut all, mut out) = (Vec::new(), Vec::new());
+    let mut total = 0;
+    for _ in 0..3 {
+        // Ends on a clipped run so the declipper holds frames back.
+        let mut block: Vec<f32> = (0..2 * 4800).map(|i| if i < 2 * 4790 { 0.2 } else { 1.0 }).collect();
+        total += block.len();
+        chain.process(&mut block, &mut out).unwrap();
+        all.extend_from_slice(&out);
+    }
+    out.clear();
+    chain.flush(&mut out).unwrap();
+    all.extend_from_slice(&out);
+    assert_eq!(all.len(), total);
+}
