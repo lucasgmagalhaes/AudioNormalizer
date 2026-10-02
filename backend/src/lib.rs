@@ -219,3 +219,74 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temporary_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("audio-normalizer-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn job_slot_cancels_the_active_job() {
+        let slot = JobSlot::default();
+        let flag = Arc::new(AtomicBool::new(false));
+        *slot.cancel.lock().unwrap() = Some(flag.clone());
+
+        slot.cancel();
+
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn cache_slot_discards_missing_or_empty_entries() {
+        let slot = CacheSlot::default();
+        let path = temporary_path("missing-cache");
+
+        slot.store(&path, None);
+
+        assert!(slot.take_for(&path).is_none());
+        assert!(FileKey::of(&path).is_none());
+    }
+
+    #[test]
+    fn inspect_file_reports_file_details_and_rejects_directories() {
+        let path = temporary_path("inspect.txt");
+        fs::write(&path, b"audio").unwrap();
+
+        let info = inspect_file(path.display().to_string()).unwrap();
+        assert_eq!(info.name, path.file_name().unwrap().to_string_lossy());
+        assert_eq!(info.size, 5);
+        assert!(!info.directory.is_empty());
+
+        let error = inspect_file(std::env::temp_dir().display().to_string()).unwrap_err();
+        assert!(matches!(error, CommandError::Failed { .. }));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn command_errors_keep_cancelled_and_failed_causes_distinct() {
+        assert!(matches!(CommandError::from(anyhow::Error::new(Cancelled)), CommandError::Cancelled));
+
+        let error = CommandError::from(anyhow::anyhow!("codec unavailable"));
+        let value = serde_json::to_value(error).unwrap();
+        assert_eq!(value["kind"], "failed");
+        assert_eq!(value["message"], "codec unavailable");
+    }
+
+    #[test]
+    fn assess_rejects_invalid_targets_before_evaluating() {
+        let measurement = Measurement {
+            integrated_lufs: -20.0,
+            loudness_range: 4.0,
+            true_peak_db: -3.0,
+            sample_peak_db: -3.0,
+        };
+        let valid = Targets { target_lufs: -16.0, true_peak_db: -1.0 };
+
+        assert!(assess(measurement, valid).is_ok());
+        assert!(assess(measurement, Targets { target_lufs: -60.0, true_peak_db: -1.0 }).is_err());
+    }
+}

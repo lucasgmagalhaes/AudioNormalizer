@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 const FFMPEG_LIBS: [&str; 4] = ["avformat", "avcodec", "avutil", "swresample"];
 
 fn main() {
+    println!("cargo::rustc-check-cfg=cfg(coverage)");
     println!("cargo:rerun-if-env-changed=FFMPEG_DIR");
     println!("cargo:rerun-if-changed=native/avbridge.c");
     println!("cargo:rerun-if-changed=native/avbridge.h");
