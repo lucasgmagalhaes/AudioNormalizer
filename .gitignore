@@ -6,3 +6,4 @@ backend/gen/
 backend/runtime/
 lcov.info
 .token-optimizer/
+.impeccable/
