@@ -10,7 +10,7 @@
   --accent-strong: #4646d8;
   --accent-soft: rgba(91, 91, 240, 0.12);
   --ok: #17a36b;
-  --warn: #d08a10;
+  --warn: #9a6100;
   --bad: #d64545;
   --shadow: 0 1px 2px rgba(20, 24, 40, 0.06), 0 8px 24px rgba(20, 24, 40, 0.06);
   --radius: 14px;
@@ -68,7 +68,7 @@ body {
 .eyebrow {
   display: block;
   margin: 0 0 2px;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.06em;
   text-transform: uppercase;
@@ -361,11 +361,13 @@ select:focus-visible {
 }
 
 .bar-fill {
-  width: 0;
+  width: 100%;
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--accent), var(--accent-strong));
-  transition: width 0.25s ease;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.25s ease;
 }
 
 .alert {
@@ -456,7 +458,7 @@ select:focus-visible {
   top: -18px;
   left: 50%;
   transform: translateX(-50%);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
 }
@@ -599,16 +601,81 @@ select:focus-visible {
   grid-template-columns: repeat(3, 1fr) 1.5fr;
 }
 
-.result-chart { margin: 16px 0; display: grid; gap: 10px; }
-.chart-row { display: grid; grid-template-columns: 72px 1fr auto; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
-.chart-track { position: relative; height: 12px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
-.chart-track i { position: absolute; left: 0; height: 100%; border-radius: inherit; transition: width .3s ease; }
-.chart-before { background: color-mix(in srgb, var(--muted) 55%, transparent); }
-.chart-after { background: var(--ok); opacity: .9; }
-.chart-row > span:last-child { min-width: 115px; text-align: right; color: var(--text); }
-.file-diff { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 14px 0 0; }
-.file-diff div { padding: 9px 10px; border-radius: 9px; background: var(--surface-2); min-width: 0; }
-.file-diff dt { font-size: 11px; color: var(--muted); }.file-diff dd { margin: 2px 0 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.result-chart {
+  margin: 16px 0;
+  display: grid;
+  gap: 10px;
+}
+
+.chart-row {
+  display: grid;
+  grid-template-columns: 72px 1fr auto;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.chart-track {
+  position: relative;
+  height: 12px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.chart-track i {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.3s ease;
+}
+
+.chart-before {
+  background: color-mix(in srgb, var(--muted) 55%, transparent);
+}
+
+.chart-after {
+  background: var(--ok);
+  opacity: 0.9;
+}
+
+.chart-row > span:last-child {
+  min-width: 115px;
+  text-align: right;
+  color: var(--text);
+}
+
+.file-diff {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.file-diff div {
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--surface-2);
+  min-width: 0;
+}
+
+.file-diff dt {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.file-diff dd {
+  margin: 2px 0 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .footnote {
   text-align: center;
@@ -617,11 +684,13 @@ select:focus-visible {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    scroll-behavior: auto !important;
-    transition-duration: 0.01ms !important;
+  html {
+    scroll-behavior: auto;
+  }
+
+  .bar-fill,
+  .chart-track i {
+    transition: none;
   }
 }
 

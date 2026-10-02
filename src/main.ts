@@ -1,7 +1,7 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { check } from "@tauri-apps/plugin-updater";
-import { applyLanguage, currentLanguage, type Language } from "./i18n";
+import { applyLanguage, currentLanguage, decimal, t, type Language } from "./i18n";
 import {
   api,
   errorMessage,
@@ -11,28 +11,11 @@ import {
   type NormalizeReport,
   type Stage,
   type Targets,
-  type Verdict,
 } from "./api";
 
 const VIDEO_EXTENSIONS = [
   "mp4", "m4v", "mov", "mkv", "webm", "avi", "wmv", "flv", "ts", "mts", "m2ts", "mpg", "mpeg", "3gp",
 ];
-
-const STAGE_LABELS: Record<Stage, string> = {
-  analyze: "Medindo o loudness do áudio…",
-  calibrate: "Ajustando o limitador para atingir o alvo…",
-  normalize: "Aplicando normalização…",
-  retry: "Recodificando para conter picos do codificador…",
-  verify: "Conferindo o arquivo gerado…",
-  finalize: "Verificando e substituindo o arquivo…",
-};
-
-const VERDICTS: Record<Verdict, string> = {
-  none: "Já está no nível ideal",
-  small: "Dá para melhorar um pouco",
-  moderate: "Melhoria considerável",
-  large: "Melhoria grande",
-};
 
 interface State {
   file: FileInfo | null;
@@ -40,9 +23,11 @@ interface State {
   /** Path the analysis belongs to; normalization reuses its measurement. */
   analyzedPath: string | null;
   busy: "analyze" | "normalize" | null;
+  report: NormalizeReport | null;
+  progress: { stage: Stage; percent: number } | null;
 }
 
-const state: State = { file: null, analysis: null, analyzedPath: null, busy: null };
+const state: State = { file: null, analysis: null, analyzedPath: null, busy: null, report: null, progress: null };
 
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
   const el = document.getElementById(id);
@@ -76,10 +61,8 @@ const ui = {
 
 // ---------------------------------------------------------------- formatting
 
-const nf1 = new Intl.NumberFormat("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 });
-
-const lufs = (v: number) => `${nf1.format(v)} LUFS`;
-const db = (v: number, unit = "dB") => `${v > 0.05 ? "+" : ""}${nf1.format(v)} ${unit}`;
+const lufs = (v: number) => `${decimal(v)} LUFS`;
+const db = (v: number, unit = "dB") => `${v > 0.05 ? "+" : ""}${decimal(v)} ${unit}`;
 
 function bytes(n: number): string {
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -88,7 +71,7 @@ function bytes(n: number): string {
     n /= 1024;
     i++;
   }
-  return `${i === 0 ? n : nf1.format(n)} ${units[i]}`;
+  return `${i === 0 ? n : decimal(n)} ${units[i]}`;
 }
 
 function duration(seconds: number): string {
@@ -101,10 +84,10 @@ function duration(seconds: number): string {
 
 function channelsLabel(n: number): string {
   if (n === 1) {
-    return "mono";
+    return t("channelsMono");
   }
   if (n === 2) {
-    return "estéreo";
+    return t("channelsStereo");
   }
   if (n === 6) {
     return "5.1";
@@ -112,7 +95,7 @@ function channelsLabel(n: number): string {
   if (n === 8) {
     return "7.1";
   }
-  return `${n} canais`;
+  return t("channelsCount", { count: n });
 }
 
 // ---------------------------------------------------------------- state -> UI
@@ -141,13 +124,19 @@ function render() {
   ui.progress.hidden = !busy;
 }
 
+function stageLabel(stage: Stage): string {
+  return t(`stage${stage[0].toUpperCase()}${stage.slice(1)}`);
+}
+
 function setProgress(stage: Stage, percent: number) {
-  ui.progressLabel.textContent = STAGE_LABELS[stage];
+  const label = stageLabel(stage);
+  ui.progressLabel.textContent = label;
   const p = Math.max(0, Math.min(100, percent));
+  state.progress = { stage, percent: p };
   ui.progressPercent.textContent = `${Math.floor(p)}%`;
-  ui.progressFill.style.width = `${p}%`;
+  ui.progressFill.style.transform = `scaleX(${p / 100})`;
   ui.progressBar.setAttribute("aria-valuenow", String(Math.floor(p)));
-  ui.progressBar.setAttribute("aria-valuetext", `${STAGE_LABELS[stage]} ${Math.floor(p)}%`);
+  ui.progressBar.setAttribute("aria-valuetext", `${label} ${Math.floor(p)}%`);
 }
 
 function showError(message: string | null) {
@@ -169,22 +158,22 @@ function renderAnalysis() {
 
   const { media, measurement: m, assessment: a } = report;
   ui.analysis.dataset.verdict = a.verdict;
-  byId("verdict-title").textContent = VERDICTS[a.verdict];
+  byId("verdict-title").textContent = t(`verdict${a.verdict[0].toUpperCase()}${a.verdict.slice(1)}`);
 
   const off = Math.abs(a.deviationLu);
   let text: string;
   if (a.verdict === "none") {
-    text = "O volume já está dentro do alvo. Normalizar fará pouca diferença.";
+    text = t("textOnTarget");
   } else if (off < 0.5) {
-    text = `O volume está no alvo, mas os picos passam do teto de ${nf1.format(a.truePeakCeilingDb)} dBTP.`;
+    text = t("textPeaks", { ceiling: decimal(a.truePeakCeilingDb) });
   } else {
-    const direction = a.deviationLu < 0 ? "abaixo" : "acima";
-    text = `O áudio está ${nf1.format(off)} LU ${direction} do alvo; será aplicado ganho de ${db(a.gainDb)}.`;
+    const direction = t(a.deviationLu < 0 ? "directionBelow" : "directionAbove");
+    text = t("textOff", { off: decimal(off), direction, gain: db(a.gainDb) });
   }
   byId("verdict-text").textContent = text;
 
   byId("potential-value").textContent = `${Math.round(a.improvementPercent)}%`;
-  byId("potential-fill").style.width = `${Math.max(2, a.improvementPercent)}%`;
+  byId("potential-fill").style.transform = `scaleX(${Math.max(2, a.improvementPercent) / 100})`;
 
   byId("scale-current").style.left = scalePosition(m.integratedLufs);
   byId("scale-target").style.left = scalePosition(a.targetLufs);
@@ -192,25 +181,23 @@ function renderAnalysis() {
   byId("m-current").textContent = lufs(m.integratedLufs);
   byId("m-target").textContent = lufs(a.targetLufs);
   byId("m-gain").textContent = db(a.gainDb);
-  byId("m-peak").textContent = `${nf1.format(m.truePeakDb)} dBTP`;
-  byId("m-lra").textContent = `${nf1.format(m.loudnessRange)} LU`;
+  byId("m-peak").textContent = `${decimal(m.truePeakDb)} dBTP`;
+  byId("m-lra").textContent = `${decimal(m.loudnessRange)} LU`;
   byId("m-audio").textContent =
     `${media.codec.toUpperCase()} · ${channelsLabel(media.channels)} · ${media.sampleRate / 1000} kHz · ${duration(media.duration)}`;
 
   const notes: string[] = [];
   if (a.limiterReductionDb > 0.3) {
-    notes.push(
-      `O limitador vai segurar os picos em até ${nf1.format(a.limiterReductionDb)} dB para não distorcer.`,
-    );
+    notes.push(t("noteLimiter", { db: decimal(a.limiterReductionDb) }));
   }
   if (a.gainCapped) {
-    notes.push("O áudio é muito baixo: o ganho foi limitado a 24 dB para não amplificar ruído demais.");
+    notes.push(t("noteGainCapped"));
   }
   if (a.clipping) {
-    notes.push("O original já encosta em 0 dBFS — pode haver distorção (clipping) que a normalização não remove.");
+    notes.push(t("noteClipping"));
   }
   if (!media.hasVideo) {
-    notes.push("Nenhuma faixa de vídeo encontrada; apenas o áudio será processado.");
+    notes.push(t("noteNoVideo"));
   }
   const list = byId("notes");
   list.replaceChildren(
@@ -224,21 +211,22 @@ function renderAnalysis() {
 }
 
 function renderResult(report: NormalizeReport | null) {
+  state.report = report;
   ui.result.hidden = report === null;
   if (!report) {
     return;
   }
-  byId("result-sub").textContent = `Arquivo substituído em ${nf1.format(report.elapsedSeconds)} s.`;
+  byId("result-sub").textContent = t("resultSub", { seconds: decimal(report.elapsedSeconds) });
   byId("result-sub").title = report.path;
   byId("r-before").textContent = lufs(report.inputLufs);
   byId("r-after").textContent = lufs(report.outputLufs);
   byId("r-gain").textContent = db(report.gainDb);
-  byId("r-peak").textContent = `${nf1.format(report.outputTruePeakDb)} dBTP`;
+  byId("r-peak").textContent = `${decimal(report.outputTruePeakDb)} dBTP`;
   byId("r-limiter").textContent =
-    report.limiterMaxReductionDb > 0.05 ? `até ${nf1.format(report.limiterMaxReductionDb)} dB` : "não atuou";
+    report.limiterMaxReductionDb > 0.05 ? t("limiterUpTo", { db: decimal(report.limiterMaxReductionDb) }) : t("limiterIdle");
   byId("r-size").textContent = `${bytes(report.sizeBefore)} → ${bytes(report.sizeAfter)}`;
   const chart = (id: string, value: number) => {
-    byId(id).style.width = `${Math.max(2, Math.min(100, ((value + 60) / 60) * 100))}%`;
+    byId(id).style.transform = `scaleX(${Math.max(2, Math.min(100, ((value + 60) / 60) * 100)) / 100})`;
   };
   chart("chart-loudness-before", report.inputLufs);
   chart("chart-loudness-after", report.outputLufs);
@@ -251,7 +239,8 @@ function renderResult(report: NormalizeReport | null) {
   byId("r-codec").textContent = `${before.codec.toUpperCase()} → ${after.codec.toUpperCase()}`;
   byId("r-audio").textContent = `${channelsLabel(before.channels)} / ${before.sampleRate / 1000} kHz → ${channelsLabel(after.channels)} / ${after.sampleRate / 1000} kHz`;
   byId("r-duration").textContent = `${duration(before.duration)} → ${duration(after.duration)}`;
-  byId("r-video").textContent = `${before.hasVideo ? "preservado" : "sem vídeo"} → ${after.hasVideo ? "preservado" : "sem vídeo"}`;
+  const videoLabel = (hasVideo: boolean) => t(hasVideo ? "videoKept" : "videoNone");
+  byId("r-video").textContent = `${videoLabel(before.hasVideo)} → ${videoLabel(after.hasVideo)}`;
 }
 
 // ---------------------------------------------------------------- actions
@@ -266,7 +255,7 @@ async function selectFile(path: string) {
     state.file = info;
     state.analysis = null;
     state.analyzedPath = null;
-    showError(VIDEO_EXTENSIONS.includes(ext) ? null : "Esse arquivo não parece ser um vídeo; vou tentar mesmo assim.");
+    showError(VIDEO_EXTENSIONS.includes(ext) ? null : t("errorNotVideo"));
     renderAnalysis();
     renderResult(null);
     render();
@@ -282,10 +271,10 @@ async function pickFile() {
   const selected = await open({
     multiple: false,
     directory: false,
-    title: "Selecione um vídeo",
+    title: t("openTitle"),
     filters: [
-      { name: "Vídeos", extensions: VIDEO_EXTENSIONS },
-      { name: "Todos os arquivos", extensions: ["*"] },
+      { name: t("openVideos"), extensions: VIDEO_EXTENSIONS },
+      { name: t("openAll"), extensions: ["*"] },
     ],
   });
   if (typeof selected === "string") {
@@ -324,10 +313,12 @@ async function runNormalize() {
   const file = state.file;
   let approved: boolean;
   try {
-    approved = await confirm(
-      `“${file.name}” será substituído pelo vídeo normalizado. Essa ação não pode ser desfeita.`,
-      { title: "Substituir vídeo original?", kind: "warning", okLabel: "Normalizar e substituir", cancelLabel: "Cancelar" },
-    );
+    approved = await confirm(t("confirmMessage", { name: file.name }), {
+      title: t("confirmTitle"),
+      kind: "warning",
+      okLabel: t("confirmOk"),
+      cancelLabel: t("cancel"),
+    });
   } catch (err) {
     showError(errorMessage(err));
     return;
@@ -352,7 +343,7 @@ async function runNormalize() {
     renderAnalysis();
     renderResult(report);
   } catch (err) {
-    showError(isCancelled(err) ? "Processamento cancelado. O arquivo original não foi alterado." : errorMessage(err));
+    showError(isCancelled(err) ? t("errorCancelled") : errorMessage(err));
   } finally {
     state.busy = null;
     render();
@@ -377,17 +368,27 @@ async function checkForUpdates() {
     if (!update) {
       return;
     }
-    const approved = await confirm(`Uma atualização (${update.version}) está disponível. Instalar agora?`, {
-      title: "Atualização disponível",
+    const approved = await confirm(t("updateMessage", { version: update.version }), {
+      title: t("updateTitle"),
       kind: "info",
-      okLabel: "Instalar e reiniciar",
-      cancelLabel: "Depois",
+      okLabel: t("updateOk"),
+      cancelLabel: t("updateLater"),
     });
     if (approved) {
       await update.downloadAndInstall();
     }
   } catch (error) {
     console.warn("Update check failed", error);
+  }
+}
+
+/** Re-render text built from state; static markup is handled by applyLanguage. */
+function refreshLanguage() {
+  renderAnalysis();
+  renderResult(state.report);
+  render();
+  if (state.busy && state.progress) {
+    setProgress(state.progress.stage, state.progress.percent);
   }
 }
 
@@ -403,12 +404,15 @@ ui.drop.addEventListener("keydown", (e) => {
 ui.analyze.addEventListener("click", () => void runAnalysis());
 ui.normalize.addEventListener("click", () => void runNormalize());
 ui.cancel.addEventListener("click", () => {
-  ui.progressLabel.textContent = "Cancelando…";
+  ui.progressLabel.textContent = t("cancelling");
   void api.cancel();
 });
 ui.target.addEventListener("change", () => void reassess());
 ui.ceiling.addEventListener("change", () => void reassess());
-ui.language.addEventListener("change", () => applyLanguage(ui.language.value as Language));
+ui.language.addEventListener("change", () => {
+  applyLanguage(ui.language.value as Language);
+  refreshLanguage();
+});
 
 void api.onProgress((event) => {
   if (state.busy) {
