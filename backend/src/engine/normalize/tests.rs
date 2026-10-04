@@ -11,6 +11,15 @@ fn interpolates_calibration_gain() {
     assert_eq!(interpolate_gain(&gains, &loudness, -12.0), 9.0);
 }
 
+#[test]
+fn encoded_peak_is_never_allowed_to_reach_full_scale() {
+    let allowed = |true_peak_db| allowed_peak_db(Targets { target_lufs: -14.0, true_peak_db });
+    assert_eq!(allowed(-1.0), -0.5);
+    assert_eq!(allowed(-9.0), -8.5);
+    assert_eq!(allowed(0.0), CLIP_GUARD_DB);
+    assert!(allowed(0.0) < 0.0);
+}
+
 fn write_test_wav(path: &Path) {
     let rate = 48_000u32;
     let frames = rate * 2;

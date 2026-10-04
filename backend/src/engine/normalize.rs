@@ -34,6 +34,12 @@ const CALIBRATION_STEPS_DB: [f64; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
 const LEVELING_CALIBRATION_STEPS_DB: [f64; 8] = [-4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0];
 /// Encoded true peak allowed above the ceiling before re-encoding.
 const PEAK_TOLERANCE_DB: f64 = 0.5;
+/// The encoded true peak is never accepted above this, whatever the ceiling.
+const CLIP_GUARD_DB: f64 = -0.1;
+/// Re-encodes allowed to bring an overshooting file under the limit.
+const MAX_OVERSHOOT_RETRIES: usize = 3;
+/// Extra reduction per retry, beyond the measured overshoot.
+const OVERSHOOT_MARGIN_DB: f64 = 0.1;
 
 /// What happens to the original file once the new one is verified.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -258,20 +264,36 @@ fn normalize_track(
     let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
     let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
-    // Lossy encoders can overshoot the ceiling. The native AAC encoder default
-    // coder occasionally does so badly (hard transients right at the start of
-    // the stream); one retry with its simpler coder fixes it.
-    if encoded.true_peak_db > targets.true_peak_db + PEAK_TOLERANCE_DB && encoded.encoder == "aac" {
-        let retry = TempFile(temp_path(original, &format!("normalizing-{pass}-retry"))?);
-        let settings = EncodeSettings { encoder_options: "aac_coder=fast", ..settings };
-        let second = encode(source_file, &source, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
-        if second.true_peak_db < encoded.true_peak_db {
-            fs::rename(&retry.0, &temp.0).context("falha ao preparar o arquivo final")?;
-            std::mem::forget(retry);
-            encoded = second;
+    // Lossy encoders can overshoot the limiter ceiling, and the output must
+    // never clip. The native AAC encoder default coder occasionally overshoots
+    // badly (hard transients right at the start of the stream), so retries use
+    // its simpler coder. Every retry also lowers the ceiling by the overshoot.
+    let allowed_db = allowed_peak_db(targets);
+    let mut settings = settings;
+    if encoded.encoder == "aac" {
+        settings.encoder_options = "aac_coder=fast";
+    }
+    for attempt in 0..MAX_OVERSHOOT_RETRIES {
+        if encoded.true_peak_db <= allowed_db {
+            break;
         }
+        settings.ceiling_db -= encoded.true_peak_db - allowed_db + OVERSHOOT_MARGIN_DB;
+        let retry = TempFile(temp_path(original, &format!("normalizing-{pass}-retry{attempt}"))?);
+        let next = encode(source_file, &source, &retry.0, &info, &settings, job, ("retry", cursor, 98.0))?;
+        if next.true_peak_db >= encoded.true_peak_db {
+            break;
+        }
+        fs::rename(&retry.0, &temp.0).context("falha ao preparar o arquivo final")?;
+        std::mem::forget(retry);
+        encoded = next;
     }
     Ok(TrackPass { track, temp, info, measurement, gain_db, encoded })
+}
+
+/// Highest encoded true peak accepted without re-encoding: the ceiling plus
+/// the codec tolerance, but always below full scale so nothing clips.
+fn allowed_peak_db(targets: Targets) -> f64 {
+    (targets.true_peak_db + PEAK_TOLERANCE_DB).min(CLIP_GUARD_DB)
 }
 
 #[derive(Clone, Copy)]
