@@ -141,7 +141,7 @@ fn bench_pipeline() {
     let options = if std::env::var("BENCH_LEVEL").is_ok() {
         normalize::Options {
             leveling: true,
-            cleanup: super::cleanup::CleanupSettings { highpass: true, declip: true },
+            cleanup: super::cleanup::CleanupSettings { highpass: true, declip: true, compress: false },
             ..Default::default()
         }
     } else {

@@ -14,6 +14,7 @@ use std::time::Instant;
 use super::analyze::{self, Measurement, CACHE_LIMIT_BYTES, MAX_GAIN_DB};
 use super::av::{self, AudioCache, AudioSource, MediaInfo, PcmDecoder, Remuxer};
 use super::cleanup::{Cleanup, CleanupSettings};
+use super::compressor::Compressor;
 use super::job::{Cancelled, Job, Progress, StageStopped, QUEUE_BLOCKS};
 use super::leveler::Leveler;
 use super::limiter::Limiter;
@@ -29,7 +30,7 @@ const CALIBRATE_ABOVE_DB: f64 = 1.0;
 /// Extra gains rendered side by side during calibration; the last one is the
 /// most calibration may add (more gain means more limiting).
 const CALIBRATION_STEPS_DB: [f64; 5] = [0.0, 1.5, 3.0, 4.5, 6.0];
-/// With leveling on, the loudness after the rider can land on either side of
+/// With leveling or compression on, the loudness can land on either side of
 /// the plain estimate, so calibration also tries lower gains.
 const LEVELING_CALIBRATION_STEPS_DB: [f64; 8] = [-4.5, -3.0, -1.5, 0.0, 1.5, 3.0, 4.5, 6.0];
 /// Encoded true peak allowed above the ceiling before re-encoding.
@@ -251,16 +252,18 @@ fn normalize_track(
 
     let predicted_limiting = measurement.true_peak_db + gain_db - ceiling_db;
     // The rider moves the loudness, so leveling always needs the dry run.
-    let leveler_reference = leveling.then_some(measurement.integrated_lufs);
-    // Rebuilt peaks also move the loudness and the peak, so declipping calibrates too.
-    if leveling || cleanup.declip || (predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB) {
+    let program_lufs = measurement.integrated_lufs;
+    let leveler_reference = leveling.then_some(program_lufs);
+    // Rebuilt peaks and compressed peaks also move the loudness and the peak,
+    // so declipping and compressing calibrate too.
+    if leveling || cleanup.declip || cleanup.compress || (predicted_limiting > CALIBRATE_ABOVE_DB && gain_db < MAX_GAIN_DB) {
         let mut progress = job.stage("calibrate", cursor, 15.0);
         cursor += 15.0;
-        let plan = Calibration { base_gain_db: gain_db, ceiling_db, target_lufs: targets.target_lufs, leveler_reference, cleanup };
+        let plan = Calibration { base_gain_db: gain_db, ceiling_db, target_lufs: targets.target_lufs, leveler_reference, program_lufs, cleanup };
         gain_db = calibrate(&source, &info, plan, job, &mut progress)?;
     }
 
-    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, lossless, cleanup, encoder_options: "" };
+    let settings = EncodeSettings { gain_db, ceiling_db, leveler_reference, program_lufs, lossless, cleanup, encoder_options: "" };
     let temp = TempFile(temp_path(original, &format!("normalizing-{pass}"))?);
     let mut encoded = encode(source_file, &source, &temp.0, &info, &settings, job, ("normalize", cursor, 98.0))?;
 
@@ -302,6 +305,8 @@ struct EncodeSettings<'a> {
     ceiling_db: f64,
     /// Program loudness the leveler pulls toward; None leaves it off.
     leveler_reference: Option<f64>,
+    /// Integrated loudness of the source; the compressor threshold follows it.
+    program_lufs: f64,
     /// Prefer FLAC over the source codec.
     lossless: bool,
     cleanup: CleanupSettings,
@@ -340,7 +345,7 @@ fn encode(
     let encoder = remuxer.encoder();
     let monitor = remuxer.monitor_format();
     let decoder = source.open(info)?;
-    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db, settings.leveler_reference, settings.cleanup)?;
+    let mut chain = Chain::new(info, settings.gain_db, settings.ceiling_db, settings.leveler_reference, settings.program_lufs, settings.cleanup)?;
     let mut progress = job.stage(stage, start, end - start);
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;
@@ -460,29 +465,41 @@ struct Rendered {
     declipped_samples: Option<u64>,
 }
 
-/// [Cleanup] -> [Leveler] -> gain -> true-peak limiter -> integrated-loudness meter.
+/// [Cleanup] -> [Leveler] -> [Compressor] -> gain -> true-peak limiter -> integrated-loudness meter.
 struct Chain {
     prep: Prep,
     tail: Tail,
 }
 
 /// The part of the chain that does not depend on the gain: clean-up and
-/// leveling. Calibration runs it once for all the candidate gains.
+/// leveling and compression. Calibration runs it once for all the candidate gains.
 struct Prep {
     cleanup: Option<Cleanup>,
     /// Cleaned audio of the block being processed.
     scratch: Vec<f32>,
     leveler: Option<Leveler>,
+    compressor: Option<Compressor>,
 }
 
 impl Prep {
-    fn new(info: &MediaInfo, leveler_reference: Option<f64>, cleanup: CleanupSettings) -> Self {
+    fn new(info: &MediaInfo, leveler_reference: Option<f64>, program_lufs: f64, cleanup: CleanupSettings) -> Self {
         let channels = info.audio.channels as usize;
         let sample_rate = info.audio.sample_rate;
         Self {
             cleanup: cleanup.any().then(|| Cleanup::new(cleanup, channels, sample_rate)),
             scratch: Vec::new(),
             leveler: leveler_reference.map(|lufs| Leveler::new(channels, sample_rate, lufs)),
+            compressor: cleanup.compress.then(|| Compressor::new(channels, sample_rate, program_lufs)),
+        }
+    }
+
+    /// Leveling, then compression, in place.
+    fn shape(&mut self, block: &mut [f32]) {
+        if let Some(leveler) = self.leveler.as_mut() {
+            leveler.process(block);
+        }
+        if let Some(compressor) = self.compressor.as_mut() {
+            compressor.process(block);
         }
     }
 
@@ -494,17 +511,13 @@ impl Prep {
                 let mut cleaned = std::mem::take(&mut self.scratch);
                 cleaned.clear();
                 cleanup.process(block, &mut cleaned);
-                if let Some(leveler) = self.leveler.as_mut() {
-                    leveler.process(&mut cleaned);
-                }
+                self.shape(&mut cleaned);
                 let done = next(&mut cleaned);
                 self.scratch = cleaned;
                 done
             }
             None => {
-                if let Some(leveler) = self.leveler.as_mut() {
-                    leveler.process(block);
-                }
+                self.shape(block);
                 next(block)
             }
         }
@@ -515,9 +528,7 @@ impl Prep {
         let mut held = Vec::new();
         if let Some(cleanup) = self.cleanup.as_mut() {
             cleanup.flush(&mut held);
-            if let Some(leveler) = self.leveler.as_mut() {
-                leveler.process(&mut held);
-            }
+            self.shape(&mut held);
         }
         held
     }
@@ -576,12 +587,13 @@ impl Chain {
         gain_db: f64,
         ceiling_db: f64,
         leveler_reference: Option<f64>,
+        program_lufs: f64,
         cleanup: CleanupSettings,
     ) -> Result<Self> {
-        Ok(Self { prep: Prep::new(info, leveler_reference, cleanup), tail: Tail::new(info, gain_db, ceiling_db)? })
+        Ok(Self { prep: Prep::new(info, leveler_reference, program_lufs, cleanup), tail: Tail::new(info, gain_db, ceiling_db)? })
     }
 
-    /// Cleans, levels and applies the gain to `block` and writes the limited
+    /// Cleans, levels, compresses and applies the gain to `block` and writes the limited
     /// audio to `out`. `block` is used as scratch space.
     fn process(&mut self, block: &mut [f32], out: &mut Vec<f32>) -> Result<()> {
         let Self { prep, tail } = self;
@@ -615,6 +627,7 @@ struct Calibration {
     ceiling_db: f64,
     target_lufs: f64,
     leveler_reference: Option<f64>,
+    program_lufs: f64,
     cleanup: CleanupSettings,
 }
 
@@ -628,8 +641,8 @@ fn calibrate(
     job: &Job,
     progress: &mut Progress,
 ) -> Result<f64> {
-    let Calibration { base_gain_db, ceiling_db, target_lufs, leveler_reference, cleanup } = plan;
-    let steps: &[f64] = if leveler_reference.is_some() { &LEVELING_CALIBRATION_STEPS_DB } else { &CALIBRATION_STEPS_DB };
+    let Calibration { base_gain_db, ceiling_db, target_lufs, leveler_reference, program_lufs, cleanup } = plan;
+    let steps: &[f64] = if leveler_reference.is_some() || cleanup.compress { &LEVELING_CALIBRATION_STEPS_DB } else { &CALIBRATION_STEPS_DB };
     let mut gains: Vec<f64> = steps
         .iter()
         .map(|step| (base_gain_db + step).clamp(-MAX_GAIN_DB, MAX_GAIN_DB))
@@ -641,7 +654,7 @@ fn calibrate(
         .iter()
         .map(|&gain| Tail::new(info, gain, ceiling_db))
         .collect::<Result<Vec<_>>>()?;
-    let mut prep = Prep::new(info, leveler_reference, cleanup);
+    let mut prep = Prep::new(info, leveler_reference, program_lufs, cleanup);
     let mut decoder = source.open(info)?;
     let channels = info.audio.channels as usize;
     let total_frames = info.duration * info.audio.sample_rate as f64;

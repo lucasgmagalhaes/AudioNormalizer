@@ -72,6 +72,7 @@ export type OutputMode = "replace" | "copy";
 export interface CleanupOptions {
   highpass: boolean;
   declip: boolean;
+  compress: boolean;
 }
 
 export interface NormalizeOptions {

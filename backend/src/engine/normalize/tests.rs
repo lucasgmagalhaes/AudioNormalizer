@@ -316,7 +316,7 @@ fn chain_and_calibration_process_decoded_audio() {
     let path = std::env::temp_dir().join(format!("audio-normalizer-calibrate-{}.wav", std::process::id()));
     write_test_wav(&path);
     let info = av::probe(&path).unwrap();
-    let mut chain = Chain::new(&info, 6.0, -1.5, None, CleanupSettings::default()).unwrap();
+    let mut chain = Chain::new(&info, 6.0, -1.5, None, -20.0, CleanupSettings::default()).unwrap();
     let mut output = Vec::new();
     let mut block = vec![0.1; info.audio.sample_rate as usize];
     chain.process(&mut block, &mut output).unwrap();
@@ -325,7 +325,7 @@ fn chain_and_calibration_process_decoded_audio() {
 
     let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
     let mut progress = job.stage("calibrate", 0.0, 1.0);
-    let plan = Calibration { base_gain_db: 6.0, ceiling_db: -1.5, target_lufs: -14.0, leveler_reference: None, cleanup: CleanupSettings::default() };
+    let plan = Calibration { base_gain_db: 6.0, ceiling_db: -1.5, target_lufs: -14.0, leveler_reference: None, program_lufs: -20.0, cleanup: CleanupSettings::default() };
     let gain = calibrate(&AudioSource::File(&path), &info, plan, &job, &mut progress).unwrap();
     assert!((6.0..=MAX_GAIN_DB).contains(&gain));
     fs::remove_file(path).unwrap();
@@ -401,7 +401,7 @@ fn cleanup_is_off_unless_asked_and_never_changes_the_duration() {
     let copy = |cleanup: CleanupSettings| Options { output: OutputMode::Copy, cleanup, ..Options::default() };
 
     let plain = run(targets, copy(CleanupSettings::default()), &path, None, None, &job).unwrap();
-    let both = CleanupSettings { highpass: true, declip: true };
+    let both = CleanupSettings { highpass: true, declip: true, ..CleanupSettings::default() };
     let cleaned = run(targets, copy(both), &path, None, None, &job).unwrap();
 
     assert_eq!(plain.declipped_samples, None);
@@ -424,8 +424,8 @@ fn flushing_with_clean_up_keeps_every_frame() {
         audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2 },
         track: 0,
     };
-    let cleanup = CleanupSettings { highpass: true, declip: true };
-    let mut chain = Chain::new(&info, 0.0, -1.5, Some(-20.0), cleanup).unwrap();
+    let cleanup = CleanupSettings { highpass: true, declip: true, compress: true };
+    let mut chain = Chain::new(&info, 0.0, -1.5, Some(-20.0), -20.0, cleanup).unwrap();
     let (mut all, mut out) = (Vec::new(), Vec::new());
     let mut total = 0;
     for _ in 0..3 {

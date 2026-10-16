@@ -91,6 +91,7 @@ const ui = {
   lossless: byId<HTMLInputElement>("lossless"),
   highpass: byId<HTMLInputElement>("highpass"),
   declip: byId<HTMLInputElement>("declip"),
+  compress: byId<HTMLInputElement>("compress"),
   copyReport: byId<HTMLButtonElement>("copy-report"),
   resultChecks: byId("result-checks"),
   queue: byId("queue"),
@@ -194,7 +195,7 @@ function renderTracks() {
 
 /** The clean-up stages the user switched on. */
 function cleanupOptions(): CleanupOptions {
-  return { highpass: ui.highpass.checked, declip: ui.declip.checked };
+  return { highpass: ui.highpass.checked, declip: ui.declip.checked, compress: ui.compress.checked };
 }
 
 function outputMode(): OutputMode {
@@ -262,6 +263,7 @@ function render() {
   ui.lossless.disabled = busy;
   ui.highpass.disabled = busy;
   ui.declip.disabled = busy;
+  ui.compress.disabled = busy;
   ui.target.disabled = busy;
   ui.ceiling.disabled = busy;
   ui.actionHint.hidden = hasInput;
@@ -275,7 +277,7 @@ function render() {
 function settingsSummary(): string {
   const chosen = [
     ui.output.selectedOptions[0]?.text ?? "",
-    ...[ui.leveling, ui.highpass, ui.declip, ui.lossless]
+    ...[ui.leveling, ui.highpass, ui.declip, ui.compress, ui.lossless]
       .filter((box) => box.checked)
       .map((box) => box.closest(".check-row")?.querySelector("span:last-child")?.textContent ?? ""),
   ];
@@ -1024,7 +1026,7 @@ ui.cancel.addEventListener("click", () => {
   void api.cancel();
 });
 ui.output.addEventListener("change", render);
-for (const box of [ui.leveling, ui.highpass, ui.declip, ui.lossless]) {
+for (const box of [ui.leveling, ui.highpass, ui.declip, ui.compress, ui.lossless]) {
   box.addEventListener("change", render);
 }
 ui.language.addEventListener("change", () => changeLanguage(ui.language.value as Language));

@@ -17,9 +17,13 @@ pub struct CleanupSettings {
     pub highpass: bool,
     /// Rebuild clipped peaks.
     pub declip: bool,
+    /// Hold back short loud peaks with a gentle voice compressor. It runs
+    /// after leveling, in the pipeline, not in [`Cleanup`].
+    pub compress: bool,
 }
 
 impl CleanupSettings {
+    /// Whether any stage of [`Cleanup`] itself is on.
     pub fn any(self) -> bool {
         self.highpass || self.declip
     }

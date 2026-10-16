@@ -671,8 +671,11 @@ static int64_t pick_bit_rate(const AVCodec *codec, const AVCodecParameters *src,
         (codec->id >= AV_CODEC_ID_PCM_S16LE && codec->id < AV_CODEC_ID_ADPCM_IMA_QT))
         return 0;
     int64_t rate = src->bit_rate > 0 ? src->bit_rate : (channels <= 2 ? 192000 : 384000);
+    /* Encoding again costs a generation of quality: never go below a rate
+     * that keeps the second generation transparent for speech and music. */
+    int64_t floor_rate = channels <= 1 ? 96000 : channels == 2 ? 160000 : 48000 * (int64_t)channels;
     int64_t max = codec->id == AV_CODEC_ID_MP3 ? 320000 : 640000;
-    return av_clip64(rate, 96000, max);
+    return av_clip64(rate, FFMIN(floor_rate, max), max);
 }
 
 static int open_encoder(AvbRemuxer *m, const AVCodecParameters *src, const char *options,

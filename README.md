@@ -19,6 +19,7 @@ Audio Normalizer is a desktop application that brings videos to a consistent lou
 - Normalizes several files in a queue with the same settings.
 - Optional speech leveling brings quiet and loud passages closer before the final gain; the target is still reached because the gain is calibrated afterwards.
 - Optional audio clean-up, off by default: a 20 Hz high-pass (DC offset and inaudible rumble) and declipping of flat-topped peaks. It only changes the audio samples: the video is never touched and the duration stays exactly the same. A stereo phase check warns when the channels cancel out in mono, without changing anything.
+- Optional voice compressor, off by default: a fast, gentle compressor (3:1, threshold 5 dB over the program loudness) that holds back short peaks such as shouts, which the slow leveling cannot catch. The gain is calibrated afterwards, so the target is still reached.
 - Optional FLAC output avoids a second lossy generation when the container accepts it (for example MKV).
 - Custom window frame with a menu bar (File: import, show result in folder, exit; Settings: opens the settings dialog (language, update check at startup, optional audio enhancements, output mode); Help: check for updates, report a problem, source code, About) instead of the operating system title bar.
 - Reports whether the result met the target (within EBU R128 tolerance of 0.5 LU) and the peak ceiling, plus the loudest momentary and short-term readings, and can copy the report as text.

@@ -107,11 +107,11 @@ test("the confirmation dialog markup matches the ids main.ts uses", () => {
 });
 
 test("the optional audio clean-up is off by default and reaches the engine for single files and the queue", () => {
-  for (const id of ["highpass", "declip"]) {
+  for (const id of ["highpass", "declip", "compress"]) {
     assert.match(html, new RegExp(`<input id="${id}" type="checkbox"(?![^>]*checked)`), `${id} must start unchecked`);
   }
   assert.equal(main.match(/cleanup: cleanupOptions\(\)/g)?.length, 2, "both normalize paths must send it");
-  assert.match(main, /highpass: ui\.highpass\.checked, declip: ui\.declip\.checked/);
+  assert.match(main, /highpass: ui\.highpass\.checked, declip: ui\.declip\.checked, compress: ui\.compress\.checked/);
 });
 
 test("the app updates itself before showing anything, and the menu can do it again", () => {
@@ -139,7 +139,7 @@ test("the drop-down lists are styled, with the native list as the fallback", () 
 
 test("the optional choices, output mode and language live in the settings dialog", () => {
   const dialog = html.slice(html.indexOf('<dialog id="settings-dialog"'), html.indexOf("</dialog>", html.indexOf('<dialog id="settings-dialog"')));
-  for (const id of ["language", "auto-update", "output", "leveling", "highpass", "declip", "lossless"]) {
+  for (const id of ["language", "auto-update", "output", "leveling", "highpass", "declip", "compress", "lossless"]) {
     assert.ok(dialog.includes(`id="${id}"`), `#${id} must be inside the settings dialog`);
   }
   const panel = html.slice(html.indexOf('<aside class="panel">'), html.indexOf("</aside>"));

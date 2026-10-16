@@ -9,6 +9,7 @@ pub mod batch;
 #[cfg(all(test, not(coverage)))]
 mod bench;
 mod cleanup;
+mod compressor;
 pub mod job;
 mod leveler;
 mod limiter;
