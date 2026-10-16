@@ -440,3 +440,188 @@ fn flushing_with_clean_up_keeps_every_frame() {
     all.extend_from_slice(&out);
     assert_eq!(all.len(), total);
 }
+
+fn compress_only() -> CleanupSettings {
+    CleanupSettings { compress: true, ..CleanupSettings::default() }
+}
+
+fn stereo_info(seconds: f64) -> MediaInfo {
+    MediaInfo {
+        duration: seconds,
+        has_video: false,
+        audio: av::AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 2 },
+        track: 0,
+    }
+}
+
+/// Runs `signal` through a chain (no gain) in blocks and returns what comes out.
+fn through_chain(chain: &mut Chain, signal: &[f32], block_frames: usize, channels: usize) -> Vec<f32> {
+    let (mut all, mut out) = (Vec::new(), Vec::new());
+    for chunk in signal.chunks(block_frames * channels) {
+        let mut block = chunk.to_vec();
+        chain.process(&mut block, &mut out).unwrap();
+        all.extend_from_slice(&out);
+        out.clear();
+    }
+    chain.flush(&mut out).unwrap();
+    all.extend_from_slice(&out);
+    all
+}
+
+#[test]
+fn flushing_with_only_the_compressor_keeps_every_frame() {
+    let info = stereo_info(3.0);
+    for block_frames in [1, 100, 4800, 7777] {
+        let mut chain = Chain::new(&info, 0.0, -1.5, None, -20.0, compress_only()).unwrap();
+        let signal: Vec<f32> = (0..2 * 48_000).map(|i| 0.5 * ((i / 2) as f32 * 0.05).sin()).collect();
+        let out = through_chain(&mut chain, &signal, block_frames, 2);
+        assert_eq!(out.len(), signal.len(), "blocks of {block_frames} frames");
+    }
+}
+
+#[test]
+fn flushing_with_everything_on_keeps_every_frame() {
+    let info = stereo_info(3.0);
+    let all_on = CleanupSettings { highpass: true, declip: true, compress: true };
+    let mut chain = Chain::new(&info, 3.0, -1.5, Some(-20.0), -20.0, all_on).unwrap();
+    // Ends on a clipped run so the declipper holds frames back.
+    let signal: Vec<f32> = (0..2 * 48_000).map(|i| if i > 2 * 47_990 { 1.0 } else { 0.3 * ((i / 2) as f32 * 0.07).sin() }).collect();
+    let out = through_chain(&mut chain, &signal, 1000, 2);
+    assert_eq!(out.len(), signal.len());
+}
+
+#[test]
+fn the_compressor_lowers_peaks_in_the_chain_and_stays_off_otherwise() {
+    let info = stereo_info(4.0);
+    let mono = testsig::bursts(4.0);
+    let signal = testsig::stereo(&mono, &mono);
+    let peak = |s: &[f32]| s.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+
+    let mut plain = Chain::new(&info, 0.0, -1.5, None, -23.0, CleanupSettings::default()).unwrap();
+    let mut compressed = Chain::new(&info, 0.0, -1.5, None, -23.0, compress_only()).unwrap();
+    let plain_out = through_chain(&mut plain, &signal, 4800, 2);
+    let compressed_out = through_chain(&mut compressed, &signal, 4800, 2);
+
+    assert!(peak(&compressed_out) < peak(&plain_out) * 0.95, "{} vs {}", peak(&compressed_out), peak(&plain_out));
+    assert!(compressed.result().unwrap().output_lufs < plain.result().unwrap().output_lufs, "compressing must cost loudness");
+    assert_eq!(compressed.result().unwrap().declipped_samples, None, "no declip was asked for");
+}
+
+#[test]
+fn the_compressor_comes_after_the_leveler() {
+    let info = stereo_info(10.0);
+    let mono = testsig::bursts(10.0);
+    let signal = testsig::stereo(&mono, &mono);
+    let level_only = |compress: bool| {
+        let cleanup = CleanupSettings { compress, ..CleanupSettings::default() };
+        let mut chain = Chain::new(&info, 0.0, -1.5, Some(-23.0), -23.0, cleanup).unwrap();
+        let out = through_chain(&mut chain, &signal, 4800, 2);
+        out.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    // Leveling alone cannot stop a loud burst's peak; the compressor behind it can.
+    assert!(level_only(true) < level_only(false));
+}
+
+#[test]
+fn compressed_audio_still_lands_on_every_target() {
+    let mono = testsig::bursts(18.0);
+    let signal = testsig::stereo(&mono, &mono);
+    let path = std::env::temp_dir().join(format!("audio-normalizer-compress-{}.wav", std::process::id()));
+    testsig::write_wav(&path, 2, &signal);
+    let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+    let mut outputs = Vec::new();
+    for (target_lufs, true_peak_db) in [(-14.0, -1.0), (-16.0, -1.5), (-23.0, -2.0)] {
+        let targets = Targets { target_lufs, true_peak_db };
+        let options = Options { output: OutputMode::Copy, cleanup: compress_only(), ..Options::default() };
+        let report = run(targets, options, &path, None, None, &job).unwrap();
+        assert!(report.cleanup.compress);
+        assert!((report.output_lufs - target_lufs).abs() < 1.0, "{target_lufs} LUFS missed: {:.2}", report.output_lufs);
+        assert!(report.output_true_peak_db <= true_peak_db + 0.5, "ceiling {true_peak_db} broken: {:.2}", report.output_true_peak_db);
+        assert!((report.output_media.duration - report.input_media.duration).abs() < 0.01);
+        assert_eq!(report.output_media.channels, 2);
+        outputs.push(report.output_path);
+    }
+    for file in outputs.iter().map(Path::new).chain([path.as_path()]) {
+        fs::remove_file(file).unwrap();
+    }
+}
+
+#[test]
+fn compression_with_leveling_and_clean_up_lands_on_the_target_too() {
+    let samples: Vec<f32> = testsig::bursts(18.0).iter().map(|s| (s * 2.4).clamp(-1.0, 1.0)).collect();
+    let path = std::env::temp_dir().join(format!("audio-normalizer-everything-{}.wav", std::process::id()));
+    testsig::write_wav(&path, 1, &samples);
+    let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+    let targets = Targets { target_lufs: -16.0, true_peak_db: -1.0 };
+    let all_on = CleanupSettings { highpass: true, declip: true, compress: true };
+    let options = Options { output: OutputMode::Copy, leveling: true, cleanup: all_on, ..Options::default() };
+
+    let report = run(targets, options, &path, None, None, &job).unwrap();
+
+    assert!(report.leveled && report.cleanup.compress);
+    assert!((report.output_lufs - targets.target_lufs).abs() < 1.0, "target missed: {:.2}", report.output_lufs);
+    assert!(report.output_true_peak_db <= targets.true_peak_db + 0.5);
+    assert!((report.output_media.duration - report.input_media.duration).abs() < 0.01);
+    for file in [path.as_path(), Path::new(&report.output_path)] {
+        fs::remove_file(file).unwrap();
+    }
+}
+
+/// Quiet speech-like tone with a loud shout every four seconds.
+fn speech_with_shouts(seconds: f64) -> Vec<f32> {
+    let quiet = testsig::tone(seconds, 220.0, 0.1);
+    quiet
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let t = i as f64 / f64::from(testsig::RATE);
+            if t % 4.0 > 3.0 && t % 4.0 < 3.4 { s * 8.0 } else { *s }
+        })
+        .collect()
+}
+
+/// Every sample of a mono file, decoded.
+fn read_mono(path: &Path) -> Vec<f32> {
+    let info = av::probe(path).unwrap();
+    let mut decoder = PcmDecoder::open(path, &info, 0).unwrap();
+    let (mut all, mut block) = (Vec::new(), Vec::new());
+    while decoder.read(&mut block).unwrap() {
+        all.extend_from_slice(&block);
+    }
+    all
+}
+
+/// Level of `samples` between two times, in dB (RMS).
+fn rms_db(samples: &[f32], from: f64, to: f64) -> f64 {
+    let rate = f64::from(testsig::RATE);
+    let part = &samples[(from * rate) as usize..(to * rate) as usize];
+    10.0 * (part.iter().map(|s| f64::from(*s).powi(2)).sum::<f64>() / part.len() as f64).log10()
+}
+
+#[test]
+fn compression_holds_shouts_closer_to_the_rest_of_the_audio() {
+    let path = std::env::temp_dir().join(format!("audio-normalizer-shouts-{}.wav", std::process::id()));
+    testsig::write_wav(&path, 1, &speech_with_shouts(20.0));
+    let job = Job::new(Arc::new(AtomicBool::new(false)), |_| {});
+    let targets = Targets { target_lufs: -18.0, true_peak_db: -1.0 };
+    let copy = |cleanup| Options { output: OutputMode::Copy, cleanup, ..Options::default() };
+
+    let plain = run(targets, copy(CleanupSettings::default()), &path, None, None, &job).unwrap();
+    let compressed = run(targets, copy(compress_only()), &path, None, None, &job).unwrap();
+
+    assert!(!plain.cleanup.compress);
+    assert!(compressed.cleanup.compress);
+    assert_ne!(plain.output_path, compressed.output_path);
+    // How far the shout (3.0 s to 3.4 s of each cycle) sits above the quiet speech.
+    let jump = |file: &str| {
+        let samples = read_mono(Path::new(file));
+        rms_db(&samples, 3.05, 3.35) - rms_db(&samples, 1.0, 2.0)
+    };
+    let (before, after) = (jump(&plain.output_path), jump(&compressed.output_path));
+    assert!(before > 15.0, "the test signal should have clear shouts: {before:.1} dB");
+    assert!(after < before - 3.0, "shouts stood out by {before:.1} dB plain, {after:.1} dB compressed");
+    assert!((compressed.output_lufs - targets.target_lufs).abs() < 1.0);
+    for file in [path.as_path(), Path::new(&plain.output_path), Path::new(&compressed.output_path)] {
+        fs::remove_file(file).unwrap();
+    }
+}

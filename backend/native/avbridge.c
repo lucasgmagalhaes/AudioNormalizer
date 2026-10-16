@@ -678,6 +678,19 @@ static int64_t pick_bit_rate(const AVCodec *codec, const AVCodecParameters *src,
     return av_clip64(rate, FFMIN(floor_rate, max), max);
 }
 
+/* The bit rate the named encoder would be given for a source of
+ * `source_bit_rate` and `channels` (0 when it takes none). Tests use it to
+ * check the rate policy without encoding anything; -1 for an unknown encoder. */
+int64_t avb_bit_rate_for(const char *encoder, int64_t source_bit_rate, int channels)
+{
+    const AVCodec *codec = avcodec_find_encoder_by_name(encoder);
+    if (!codec)
+        return -1;
+    AVCodecParameters src = {0};
+    src.bit_rate = source_bit_rate;
+    return pick_bit_rate(codec, &src, channels);
+}
+
 static int open_encoder(AvbRemuxer *m, const AVCodecParameters *src, const char *options,
                         int lossless, char *err)
 {

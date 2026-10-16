@@ -44,7 +44,7 @@ fn nothing_is_on_by_default() {
 #[test]
 fn the_length_never_changes_whatever_the_block_size() {
     let signal = clipped_tone(1.0, 220.0);
-    let both = CleanupSettings { highpass: true, declip: true };
+    let both = CleanupSettings { highpass: true, declip: true, ..CleanupSettings::default() };
     for block in [1, 7, 100, 4096, 100_000] {
         let out = run(&mut only(both), &signal, 1, block);
         assert_eq!(out.len(), signal.len(), "block size {block}");
@@ -129,4 +129,21 @@ fn the_high_pass_cuts_rumble() {
 
     let peak = out[out.len() / 2..].iter().fold(0.0f32, |p, s| p.max(s.abs()));
     assert!(peak < 0.15, "5 Hz still at {peak}");
+}
+
+#[test]
+fn the_compressor_is_off_by_default_and_is_not_a_clean_up_stage() {
+    assert!(!CleanupSettings::default().compress);
+    let only_compress = CleanupSettings { compress: true, ..CleanupSettings::default() };
+    assert!(!only_compress.any(), "compression runs in the pipeline, not in Cleanup");
+}
+
+#[test]
+fn settings_are_read_from_the_camel_case_json_the_ui_sends() {
+    let all: CleanupSettings = serde_json::from_str(r#"{"highpass":true,"declip":true,"compress":true}"#).unwrap();
+    assert_eq!(all, CleanupSettings { highpass: true, declip: true, compress: true });
+    let old_ui: CleanupSettings = serde_json::from_str(r#"{"highpass":true,"declip":false}"#).unwrap();
+    assert!(!old_ui.compress, "a UI that does not know the compressor leaves it off");
+    let empty: CleanupSettings = serde_json::from_str("{}").unwrap();
+    assert_eq!(empty, CleanupSettings::default());
 }
