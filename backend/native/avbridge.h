@@ -91,4 +91,7 @@ int avb_remuxer_read_monitor(AvbRemuxer *mux, float *out, int max_frames);
 int avb_remuxer_finish(AvbRemuxer *mux, char *err);
 void avb_remuxer_close(AvbRemuxer *mux);
 
+/* Bit rate the named encoder gets for such a source (policy check for tests). */
+int64_t avb_bit_rate_for(const char *encoder, int64_t source_bit_rate, int channels);
+
 #endif

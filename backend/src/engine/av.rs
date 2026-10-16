@@ -49,6 +49,8 @@ extern "C" {
     fn avb_probe(path: *const c_char, track: c_int, info: *mut AvbMediaInfo, err: *mut c_char) -> c_int;
     fn avb_cache_free(cache: *mut AvbAudioCache);
     #[cfg(test)]
+    fn avb_bit_rate_for(encoder: *const c_char, source_bit_rate: i64, channels: c_int) -> i64;
+    #[cfg(test)]
     fn avb_cache_bytes(cache: *const AvbAudioCache) -> i64;
     fn avb_decoder_open(path: *const c_char, track: c_int, record_limit: i64, err: *mut c_char) -> *mut AvbDecoder;
     fn avb_decoder_open_cache(cache: *const AvbAudioCache, err: *mut c_char) -> *mut AvbDecoder;
@@ -502,6 +504,16 @@ pub fn extension(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
+/// Bit rate the bridge gives `encoder` for a source of `source_bit_rate` (None
+/// for an unknown encoder; 0 when the encoder takes no rate).
+#[cfg(test)]
+pub fn bit_rate_for(encoder: &str, source_bit_rate: i64, channels: i32) -> Option<i64> {
+    let name = std::ffi::CString::new(encoder).unwrap();
+    // SAFETY: valid NUL-terminated name; the function only reads its arguments.
+    let rate = unsafe { avb_bit_rate_for(name.as_ptr(), source_bit_rate, channels) };
+    (rate >= 0).then_some(rate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -520,5 +532,36 @@ mod tests {
         let info = MediaInfo { duration: 0.0, has_video: false, audio: AudioInfo { codec: "pcm".into(), sample_rate: 48_000, channels: 1 }, track: 0 };
         assert!(probe(Path::new("missing-file.wav")).is_err());
         assert!(PcmDecoder::open(Path::new("missing-file.wav"), &info, 0).is_err());
+    }
+
+    #[test]
+    fn re_encoding_never_goes_below_the_bit_rate_floor() {
+        // Low-rate sources are lifted to the floor instead of repeating their quality.
+        assert_eq!(bit_rate_for("aac", 96_000, 2), Some(160_000));
+        assert_eq!(bit_rate_for("aac", 128_000, 2), Some(160_000));
+        assert_eq!(bit_rate_for("aac", 64_000, 1), Some(96_000));
+        assert_eq!(bit_rate_for("aac", 150_000, 6), Some(288_000));
+    }
+
+    #[test]
+    fn re_encoding_keeps_a_rate_that_is_already_high_enough() {
+        assert_eq!(bit_rate_for("aac", 160_000, 2), Some(160_000));
+        assert_eq!(bit_rate_for("aac", 256_000, 2), Some(256_000));
+        assert_eq!(bit_rate_for("aac", 192_000, 1), Some(192_000));
+        assert_eq!(bit_rate_for("aac", 448_000, 6), Some(448_000));
+    }
+
+    #[test]
+    fn re_encoding_falls_back_when_the_source_rate_is_unknown() {
+        assert_eq!(bit_rate_for("aac", 0, 2), Some(192_000));
+        assert_eq!(bit_rate_for("aac", 0, 1), Some(192_000));
+        assert_eq!(bit_rate_for("aac", 0, 6), Some(384_000));
+    }
+
+    #[test]
+    fn re_encoding_stays_under_the_codec_ceiling() {
+        assert_eq!(bit_rate_for("aac", 5_000_000, 2), Some(640_000));
+        assert_eq!(bit_rate_for("flac", 5_000_000, 2), Some(0), "lossless takes no rate");
+        assert_eq!(bit_rate_for("no-such-encoder", 128_000, 2), None);
     }
 }
